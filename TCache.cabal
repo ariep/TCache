@@ -69,7 +69,9 @@ library
 
 
     exposed-modules: Data.TCache Data.TCache.DefaultPersistence,
-                     Data.TCache.Defs Data.TCache.IResource Data.TCache.IndexQuery
+                     Data.TCache.Defs 
+                     Data.TCache.ID
+                     Data.TCache.IResource Data.TCache.IndexQuery
                      Data.TCache.IndexText Data.TCache.Memoization Data.TCache.Triggers
                      Data.Persistent.Collection
                      Data.Persistent.IDynamic
