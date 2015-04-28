@@ -79,6 +79,7 @@ module Data.TCache.IndexQuery(
 , (.<=.)
 , (.>=.)
 , (.>.)
+, maximumQ
 , indexOf
 , recordsWith
 , (.&&.)
@@ -314,6 +315,17 @@ instance SetOperations  (JoinData a a') [DBRef a'] (JoinData a a') where
      ys <- fys
      return [(zs, union xs ys) | (zs,xs) <- xss]
 
+
+maximumQ :: Queriable reg a => (reg -> a) -> STM (Maybe (a,[DBRef reg]))
+maximumQ selector = do
+   let [one, two] = typeRepArgs $! typeOf selector
+   let rindex = getDBRef $! keyIndex one two
+   mindex <- readDBRef rindex
+   case mindex of
+     Just (Index index) -> return $ fmap fst (M.maxViewWithKey index)
+     _ -> do
+        let fields = show $ typeOf selector
+        error $ "the index for "++ fields ++" do not exist. At main, use \"Data.TCache.IdexQuery.index\" to start indexing this field"
 
 -- |  return all  the (indexed)  values which this field has and a DBRef pointer to the register
 indexOf :: (Queriable reg a) => (reg -> a) -> STM [(a,[DBRef reg])]
