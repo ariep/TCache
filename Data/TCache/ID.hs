@@ -73,7 +73,9 @@ listWithID :: forall a. (T.IResource (WithID a),T.PersistIndex (WithID a),Typeab
   => T.STM [WithID a]
 listWithID = do
   ids <- T.indexOf (selector :: WithID a -> ID)
-  for ids $ \ (i,[r]) -> WithID i <$> deref r
+  (concat <$>) . for ids $ \ (i,refs) -> case refs of
+    [r] -> (: []) . WithID i <$> deref r
+    []  -> return []
 
 delete :: (T.IResource (WithID a),Typeable a)
   => Ref a -> T.STM ()
