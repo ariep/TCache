@@ -140,13 +140,11 @@ instance (Queriable reg a) => Serializable (Index reg a)  where
 keyIndex treg tv= "index-" ++ show treg ++ show tv
 
 instance (Typeable reg, Typeable a) => Indexable (Index reg a) where
-   key map= keyIndex typeofreg typeofa
-       where
-       [typeofreg, typeofa]= typeRepArgs $! typeOf map
---   defPath index= defPath $ ofRegister index
---       where
---       ofRegister :: Index reg a -> reg
---       ofRegister = undefined -- type level
+  key map= keyIndex typeofreg typeofa where
+    [typeofreg, typeofa]= typeRepArgs $! typeOf map
+--   defPath index= defPath (ofRegister index) ++ "index/" where
+--     ofRegister :: Index reg a -> reg
+--     ofRegister = undefined -- type level
 -- instance (Queriable reg a, Typeable reg, Typeable a) => IResource (Index reg a) where
 --  keyResource = key
 --  writeResource =defWriteResource
