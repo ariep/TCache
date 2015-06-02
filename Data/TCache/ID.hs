@@ -6,7 +6,7 @@
 module Data.TCache.ID
   (
     ID(ID)
-  , WithID(WithID)
+  , WithID(WithID,object,_id)
   , new
   , Ref
   , newRef
@@ -24,6 +24,8 @@ import qualified Data.TCache.Defs as T
 import qualified Data.TCache.IndexQuery as T
 
 import           Control.Applicative ((<$>))
+import qualified Data.Serialize   as C
+import           Data.Serialize.Text ()
 import           Data.Text           (Text,pack)
 import           Data.Traversable    (for)
 import           Data.Typeable       (Typeable)
@@ -35,6 +37,7 @@ import           System.Random       (newStdGen,randomRs)
 newtype ID a
   = ID Text
   deriving (Eq,Ord,Generic,Typeable,Show,Read)
+instance C.Serialize (ID a) where
 
 data WithID a
   = WithID
