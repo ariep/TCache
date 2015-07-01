@@ -70,16 +70,19 @@ library
                    cereal-text >= 0.1 && < 0.2,
                    vector-binary-instances >= 0.2 && < 0.3,
                    full-text-search >= 0.2 && < 0.3,
+                   transformers >= 0.3 && < 0.5,
                    RefSerialize -any
 
 
 
     exposed-modules: Data.TCache Data.TCache.DefaultPersistence,
                      Data.TCache.Defs
-                     Data.TCache.FullTextSearch
                      Data.TCache.ID
-                     Data.TCache.IResource Data.TCache.IndexQuery
-                     Data.TCache.IndexText Data.TCache.Memoization Data.TCache.Triggers
+                     Data.TCache.IResource
+                     Data.TCache.Index
+                     Data.TCache.Index.Map
+                     Data.TCache.Index.FullTextSearch
+                     Data.TCache.Memoization Data.TCache.Triggers
                      Data.Persistent.Collection
                      Data.Persistent.IDynamic
 

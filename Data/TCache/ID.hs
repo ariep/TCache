@@ -3,6 +3,7 @@
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE DeriveGeneric #-}
+{-# LANGUAGE StandaloneDeriving #-}
 module Data.TCache.ID
   (
     ID(ID)
@@ -13,22 +14,24 @@ module Data.TCache.ID
   , lookup
   , deref
   , maybeDeref
-  , selector
   , listWithID
   , delete
   , update
   ) where
 
-import qualified Data.TCache      as T
-import qualified Data.TCache.Defs as T
-import qualified Data.TCache.IndexQuery as T
+import qualified Data.TCache       as T
+import qualified Data.TCache.Defs  as T
+import qualified Data.TCache.Index as T
+import qualified Data.TCache.Index.Map as IndexMap
 
 import           Control.Applicative ((<$>))
 import qualified Data.Serialize   as C
 import           Data.Serialize.Text ()
-import           Data.Text           (Text,pack)
+import qualified Data.Map         as Map
+import qualified Data.Set         as Set
+import           Data.Text           (Text,pack,unpack)
 import           Data.Traversable    (for)
-import           Data.Typeable       (Typeable)
+import           Data.Typeable       (Typeable,typeRep,Proxy(Proxy))
 import           GHC.Generics        (Generic)
 import           Prelude hiding (lookup)
 import           System.Random       (newStdGen,randomRs)
@@ -47,24 +50,32 @@ data WithID a
     }
   deriving (Generic,Typeable,Show)
 
-new :: forall a. (T.IResource (WithID a),T.PersistIndex (WithID a),Typeable a)
-  => a -> T.STM (WithID a)
+deriving instance (Read a) => Read (WithID a)
+
+instance T.Indexable (WithID a) where
+  key (WithID (ID t) _) = unpack t
+
+new :: forall a.
+  ( T.IResource (WithID a),T.PersistIndex (WithID a),T.Serializable (WithID a)
+  , Typeable a
+  , T.IResource (Map.Map (ID a) (Set.Set (Ref a)))
+  ) => a -> T.STM (WithID a)
 new x = loop where
   loop = do
     i <- ID <$> T.unsafeIOToSTM (randomText 8)
-    existing <- (selector :: WithID a -> ID a) T..==. i
-    case existing of
-      [] -> return $ WithID i x
-      _  -> loop
+    existing <- IndexMap.lookup (IndexMap.field (_id :: WithID a -> ID a) "") i
+    if Set.null existing
+      then return $ WithID i x
+      else loop
 
 randomText :: Int -> IO Text
 randomText l = pack . take l . randomRs ('a','z') <$> newStdGen
 
-selector :: WithID a -> ID a
-selector (WithID i _) = i
-
-newRef :: (T.IResource (WithID a),T.PersistIndex (WithID a),Typeable a)
-  => a -> T.STM (Ref a)
+newRef ::
+  ( T.IResource (WithID a),T.PersistIndex (WithID a),T.Serializable (WithID a)
+  , Typeable a
+  , T.IResource (Map.Map (ID a) (Set.Set (Ref a)))
+  ) => a -> T.STM (Ref a)
 newRef x = T.newDBRef =<< new x
 
 type Ref a
@@ -85,11 +96,15 @@ maybeDeref r = T.readDBRef r >>= \case
   Just (WithID _ x) -> return $ Just x
   Nothing           -> return Nothing
 
-listWithID :: forall a. (T.IResource (WithID a),T.PersistIndex (WithID a),Typeable a)
+listWithID :: forall a.
+  ( T.IResource (WithID a),T.PersistIndex (WithID a),T.Serializable (WithID a)
+  , Typeable a
+  , T.IResource (Map.Map (ID a) (Set.Set (Ref a)))
+  )
   => T.STM [WithID a]
 listWithID = do
-  ids <- T.indexOf (selector :: WithID a -> ID a)
-  (concat <$>) . for ids $ \ (i,refs) -> case refs of
+  ids <- IndexMap.listAll $ IndexMap.field (_id :: WithID a -> ID a) ""
+  (concat <$>) . for ids $ \ (i,refs) -> case Set.toList refs of
     [r] -> (: []) . WithID i <$> deref r
     []  -> return []
 

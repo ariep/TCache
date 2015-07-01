@@ -62,14 +62,13 @@ instance MonadIO Identity where
 
 cachedKeyPrefix = "cached"
 
-instance  (Indexable a) => IResource (Cached a  b) where
-  keyResource ch@(Cached a  _ _ _)= cachedKeyPrefix ++ key a   -- ++ unsafePerformIO (addrStr f )
-
-  writeResource _= return ()
-  delResource _= return ()
-  readResourceByKey k= return Nothing -- error $ "access By key is undefined for cached objects.key= " ++ k
-
-
+instance (Indexable a) => IResource (Cached a b) where
+  keyResource ch@(Cached a  _ _ _) = cachedKeyPrefix ++ key a   -- ++ unsafePerformIO (addrStr f )
+  
+  writeResource _ = return ()
+  delResource _ = return ()
+  readResourceByKey k = return Nothing -- error $ "access By key is undefined for cached objects.key= " ++ k
+  
   readResource (Cached a f _ _)=do
    TOD tnow _ <- getClockTime
    let b = execute $ f a
@@ -131,8 +130,8 @@ cachedByKeySTM :: (Typeable a, Executable m) => String -> Int ->  m a -> STM a
 cachedByKeySTM key time  f = cachedSTM  time (\_ -> f) key
 
 -- Flush the cached object indexed by the key
-flushCached :: String -> IO ()
-flushCached k= atomically $ invalidateKey $ cachedKeyPrefix ++ k           -- !> "flushCached"
+flushCached :: (Typeable a) => Proxy a -> String -> IO ()
+flushCached proxy k = atomically $ invalidateKey proxy $ cachedKeyPrefix ++ k -- !> "flushCached"
 
 -- | a pure version of cached
 cachedp :: (Indexable a,Typeable a,Typeable b) => (a ->b) -> a -> b

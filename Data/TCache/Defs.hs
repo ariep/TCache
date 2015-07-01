@@ -1,24 +1,31 @@
-{-# LANGUAGE   TypeSynonymInstances, FlexibleInstances, ScopedTypeVariables, DeriveDataTypeable #-}
-
+{-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE Rank2Types #-}
+{-# LANGUAGE TypeSynonymInstances #-}
+{-# LANGUAGE FlexibleInstances #-}
+{-# LANGUAGE DeriveDataTypeable #-}
 {- | some internal definitions. To use default persistence, import
 @Data.TCache.DefaultPersistence@ instead -}
-
-module Data.TCache.Defs  where
-import Data.Typeable
-import Control.Concurrent.STM(TVar)
+module Data.TCache.Defs where
 
 import Data.TCache.IResource
 
-import System.IO.Unsafe
-import Data.IORef
-import System.Directory
-import Control.Monad(when,replicateM)
-import System.IO
-import System.IO.Error
-import Control.Exception as Exception
-import Control.Concurrent
-import Data.List(elemIndices,isInfixOf)
-import Data.Maybe(fromJust)
+import           Control.Concurrent
+import           Control.Concurrent.STM (TVar)
+import           Control.Exception as Exception
+import           Control.Monad          (when,replicateM)
+import           Data.IORef
+import           Data.List              (elemIndices,isInfixOf,stripPrefix)
+import           Data.Maybe             (fromJust,catMaybes)
+import           Data.Typeable
+import           System.Directory
+  (
+    createDirectoryIfMissing
+  , getDirectoryContents
+  , removeFile
+  )
+import           System.IO
+import           System.IO.Unsafe
+import           System.IO.Error
 
 import qualified Data.ByteString.Lazy.Char8 as B
 
@@ -37,14 +44,14 @@ type TPVar a=   TVar (Status(Elem a))
 
 data DBRef a= DBRef !String  !(TPVar a)  deriving Typeable
 
-
-
-castErr a= r where
-  r= case cast a of
-      Nothing -> error $ "Type error: " ++ (show $ typeOf a) ++ " does not match "++ (show $ typeOf r)
-                          ++ "\nThis means that objects of these two types have the same key \nor the retrieved object type is not the previously stored one for the same key\n"
-      Just x  -> x
-
+castErr :: forall a b. (Typeable a,Typeable b) => String -> a -> b
+castErr s a = case cast a of
+  Just x  -> x
+  Nothing -> error $
+    "Type error: " ++ (show $ typeOf a) ++ " does not match "++ (show $ typeOf (undefined :: b))
+    ++ "\nThis means that objects of these two types have the same key"
+    ++ "\nor the retrieved object type is not the previously stored one for the same key."
+    ++ "\n" ++ s
 
 {- | Indexable is an utility class used to derive instances of IResource
 
@@ -112,115 +119,122 @@ class PersistIndex a where
    persistIndex :: a -> Maybe Persist
 
 
-type Key= String
---instance (Show a, Read a)=> Serializable a where
---  serialize= show
---  deserialize= read
+type Key
+  = String
 
-
--- | a persist mechanism has to implement these three primitives
--- 'filePersist' is the default file persistence
-data Persist = Persist{
-       readByKey   ::  (Key -> IO(Maybe B.ByteString)) -- ^  read by key. It must be strict
-     , write       ::  (Key -> B.ByteString -> IO())   -- ^  write. It must be strict
-     , delete      ::  (Key -> IO())}                  -- ^  delete
+-- | A persistence mechanism has to implement these primitives.
+-- 'filePersist' is the default file persistence.
+data Persist = Persist
+  {
+    readByKey   :: Key -> IO (Maybe B.ByteString) -- ^ read by key. It must be strict.
+  , write       :: Key -> B.ByteString -> IO ()   -- ^ write. It must be strict.
+  , delete      :: Key -> IO ()                   -- ^ delete
+  , listByType  :: (Typeable t)
+    => FilePath -> Proxy t -> IO [Key]            -- ^ list key of objects of the given type.
+  }
 
 -- | Implements default default-persistence of objects in files with their keys as filenames
-filePersist   = Persist
-    {readByKey= defaultReadByKey
-    ,write    = defaultWrite
-    ,delete   = defaultDelete}
+filePersist = Persist
+  {
+    readByKey  = defaultReadByKey
+  , write      = defaultWrite
+  , delete     = defaultDelete
+  , listByType = defaultListByType
+  }
 
-defaultPersistIORef = unsafePerformIO $ newIORef  filePersist
+defaultPersistIORef = unsafePerformIO $ newIORef filePersist
 
 -- | Set the default persistence mechanism of all 'serializable' objects that have
 -- @setPersist= const Nothing@. By default it is 'filePersist'
 --
 -- this statement must be the first one before any other TCache call
-setDefaultPersist p= writeIORef defaultPersistIORef p
+setDefaultPersist p = writeIORef defaultPersistIORef p
 
-getDefaultPersist =  unsafePerformIO $ readIORef defaultPersistIORef
+getDefaultPersist = unsafePerformIO $ readIORef defaultPersistIORef
 
-getPersist x= unsafePerformIO $ case setPersist x of
+getPersist x = unsafePerformIO $ case setPersist x of
      Nothing -> readIORef defaultPersistIORef
      Just p  -> return p
-  `Exception.catch` (\(e:: SomeException) -> error $ "setPersist must depend on the type, not the value of the parameter for: "
-                                                         ++  show (typeOf x)
-                                                         ++ "error was:" ++ show e)
-
+  `Exception.catch` (\ (e :: SomeException) -> error $
+    "setPersist must depend on the type, not the value of the parameter for: "
+      ++  show (typeOf x)
+      ++ "error was:" ++ show e)
 
 defaultReadByKey ::   String-> IO (Maybe B.ByteString)
-defaultReadByKey k= iox   -- !> "defaultReadByKey"
-     where
-     iox = handle handler $ do   
-             s <-  readFileStrict  k 
-             return $ Just   s                                                       -- `debug` ("read "++ filename)
-
- 
-     handler ::  IOError ->  IO (Maybe B.ByteString)
-     handler  e
-      | isAlreadyInUseError e = defaultReadByKey  k                         
-      | isDoesNotExistError e = return Nothing
-      | otherwise= if ("invalid" `isInfixOf` ioeGetErrorString e)
-         then
-            error $  "defaultReadByKey: " ++ show e ++ " defPath and/or keyResource are not suitable for a file path:\n"++ k++"\""
-              
-         else defaultReadByKey  k
-
+defaultReadByKey k = handle handler $ do
+  s <- readFileStrict k 
+  return $ Just s -- `debug` ("read "++ filename)
+ where
+  handler :: IOError -> IO (Maybe B.ByteString)
+  handler e
+    | isAlreadyInUseError e = defaultReadByKey  k                         
+    | isDoesNotExistError e = return Nothing
+    | otherwise             = if "invalid" `isInfixOf` ioeGetErrorString e
+        then error $ "defaultReadByKey: " ++ show e
+          ++ " defPath and/or keyResource are not suitable for a file path:\n" ++ k ++ "\""
+        else defaultReadByKey  k
 
 defaultWrite :: String-> B.ByteString -> IO()
 defaultWrite filename x= safeWrite filename  x
 safeWrite filename str= handle  handler  $ B.writeFile filename str   -- !> ("write "++filename)
      where          
-     handler e-- (e :: IOError)
-       | isDoesNotExistError e=do 
-                  createDirectoryIfMissing True $ take (1+(last $ elemIndices '/' filename)) filename   --maybe the path does not exist
-                  safeWrite filename str               
-
-
-       | otherwise= if ("invalid" `isInfixOf` ioeGetErrorString e)
-             then
-                error  $ "defaultWriteResource: " ++ show e ++ " defPath and/or keyResource are not suitable for a file path: "++ filename
-             else do
-                hPutStrLn stderr $ "defaultWriteResource:  " ++ show e ++  " in file: " ++ filename ++ " retrying"
-                safeWrite filename str
+     handler e -- (e :: IOError)
+       | isDoesNotExistError e = do
+           createDirectoryIfMissing True $ take (1+(last $ elemIndices '/' filename)) filename -- maybe the path does not exist
+           safeWrite filename str               
+       | otherwise = if ("invalid" `isInfixOf` ioeGetErrorString e)
+           then
+             error  $ "defaultWriteResource: " ++ show e ++ " defPath and/or keyResource are not suitable for a file path: "++ filename
+           else do
+             hPutStrLn stderr $ "defaultWriteResource: " ++ show e ++ " in file: " ++ filename ++ " retrying"
+             safeWrite filename str
               
-defaultDelete :: String -> IO()
-defaultDelete filename =do
-     handle (handler filename) $ removeFile filename
+defaultDelete :: String -> IO ()
+defaultDelete filename = handle (handler filename) $ removeFile filename where
+  handler :: String -> IOException -> IO ()
+  handler file e
+    | isDoesNotExistError e= return ()  --`debug` "isDoesNotExistError"
+    | isAlreadyInUseError e= do
+        hPutStrLn stderr $ "defaultDelResource: busy"  ++  " in file: " ++ filename ++ " retrying"
+        -- threadDelay 100000   --`debug`"isAlreadyInUseError"
+        defaultDelete filename  
+    | otherwise = do
+        hPutStrLn stderr $ "defaultDelResource: " ++ show e ++ " in file: " ++ filename ++ " retrying"
+        -- threadDelay 100000     --`debug` ("otherwise " ++ show e)
+        defaultDelete filename
 
-     where
+defaultListByType :: forall t. (Typeable t) => FilePath -> Proxy t -> IO [Key]
+defaultListByType dir _ = do
+  files <- getDirectoryContents dir
+  return . catMaybes . map (stripPrefix $ typeString ++ "-") $ files
+ where
+  typeString = show (typeOf (undefined :: t))
 
-     handler :: String -> IOException -> IO ()
-     handler file e
-       | isDoesNotExistError e= return ()  --`debug` "isDoesNotExistError"
-       | isAlreadyInUseError e= do
-            hPutStrLn stderr $ "defaultDelResource: busy"  ++  " in file: " ++ filename ++ " retrying"
---            threadDelay 100000   --`debug`"isAlreadyInUseError"
-            defaultDelete filename  
-       | otherwise = do
-            hPutStrLn stderr $ "defaultDelResource:  " ++ show e ++  " in file: " ++ filename ++ " retrying"
---           threadDelay 100000     --`debug` ("otherwise " ++ show e)
-            defaultDelete filename
+defReadResourceByKey :: forall t. (Indexable t,Serializable t,Typeable t) => Key -> IO (Maybe t)
+defReadResourceByKey k = do
+  let Persist f _ _ _ = getPersist (undefined :: t)
+  f (filePath (Proxy :: Proxy t) k) >>= evaluate . fmap (deserialKey k)
 
+defWriteResource :: forall t. (Indexable t,Serializable t,Typeable t)
+  => t -> IO ()
+defWriteResource s = do
+  let Persist _ f _ _ = getPersist s
+  f (filePath (Proxy :: Proxy t) $ key s) $ serialize s
 
+defDelResource :: forall t. (Indexable t,Serializable t,Typeable t)
+  => t -> IO ()
+defDelResource s = do
+  let Persist _ _ f _ = getPersist s
+  f $ filePath (Proxy :: Proxy t) (key s)
 
-defReadResourceByKey k= iox where
-    iox= do
-      let Persist f _ _ = getPersist  x
-      f  file >>=  evaluate . fmap  (deserialKey k)
-      where
-      file= defPath x ++ k
-      x= undefined `asTypeOf` (fromJust $ unsafePerformIO iox)
+defListResources :: forall t. (Serializable t,Indexable t,Typeable t) => Proxy t -> IO [Key]
+defListResources p = do
+  let Persist _ _ _ f = getPersist (undefined :: t)
+  f (defPath (undefined :: t)) p
 
-defWriteResource s= do
-      let Persist _ f _ = getPersist  s
-      f (defPath s ++ key s) $ serialize s
-
-defDelResource s= do
-      let Persist _ _ f = getPersist s
-      f $ defPath s ++ key s
-
+filePath :: forall t. (Indexable t,Typeable t) => Proxy t -> Key -> FilePath
+filePath _ k = defPath (undefined :: t) ++ typeString ++ "-" ++ k where
+  typeString = show $ typeOf (undefined :: t)
 
 -- | Strict read from file, needed for default file persistence
 readFileStrict f = openFile f ReadMode >>= \ h -> readIt h `finally` hClose h
@@ -230,4 +244,3 @@ readFileStrict f = openFile f ReadMode >>= \ h -> readIt h `finally` hClose h
       let n= fromIntegral s
       str <- B.hGet h n
       return str
-
