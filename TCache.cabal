@@ -92,6 +92,6 @@ library
     buildable: True
     extensions: OverlappingInstances UndecidableInstances
                 ScopedTypeVariables DeriveDataTypeable
-    hs-source-dirs: .
+    hs-source-dirs: src
     other-modules:
 
