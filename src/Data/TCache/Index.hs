@@ -37,6 +37,7 @@ class
   selector :: s -> Record s -> Property s
   type QueryType s
   type QueryType s = ()
+
 class
   ( Selector s,Indexable s,Typeable s
   , IResource (Index s),Typeable (Index s)
@@ -46,13 +47,6 @@ class
   type Index s
   emptyIndex :: s -> Index s
   addToIndex,removeFromIndex :: s -> Property s -> DBRef (Record s) -> Index s -> Index s
---   type Query s (k :: QueryType s)
---   type Result s k
---   type Result s k = Set (DBRef (Record s))
---   lookupIndex :: k -> s -> Query s k -> Index s -> Result s k
-
--- find :: (Indexed s) => k -> s -> Query s k -> STM (Result s k)
--- find k s c = lookupIndex k s c <$> readIndex s
 
 -- | Register a trigger for indexing the values of the field passed as parameter.
 -- The indexed field can be used to perform relational-like searches.

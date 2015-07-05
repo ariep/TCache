@@ -5,7 +5,8 @@
 {-# LANGUAGE MultiParamTypeClasses #-}
 module Data.TCache.Index.FullTextSearch
   (
-    SearchStatics(..)
+    FTS(FTS)
+  , SearchStatics(..)
   , query
   , queryAutosuggest
   
@@ -36,11 +37,15 @@ import           System.Mem.StableName (makeStableName)
 type Text
   = Text.Text
 
-type FTS doc field feature
-  = (S.SearchConfig doc (DBRef doc) field feature,S.SearchRankParameters field feature)
+-- type FTS doc field feature
+--   = (S.SearchConfig doc (DBRef doc) field feature,S.SearchRankParameters field feature)
+
+data FTS doc field feature
+  = FTS
+  deriving (Typeable)
 
 instance Indexable (FTS doc field feature) where
-  key (_,_) = ""
+  key _ = ""
 
 instance (IResource doc,Typeable doc)
   => Selector (FTS doc field feature) where
@@ -55,11 +60,11 @@ instance
   ) => Indexed (FTS doc field feature) where
   type Index (FTS doc field feature)
     = S.SearchEngine doc (DBRef doc) field feature
-  emptyIndex (sc,rp) = S.initSearchEngine sc rp
-  addToIndex      (sc,rp) doc _dbref = S.insertDoc doc
-  removeFromIndex (sc,rp) doc _dbref = S.deleteDoc (S.documentKey sc doc)
---   type Query  (FTS doc field value) k = FTSQuery k
---   type Result (FTS doc field value) k = FTSResult k
+  emptyIndex _ = S.initSearchEngine config
+    (rankParams (Proxy :: Proxy doc) (Proxy :: Proxy (DBRef doc)) :: S.SearchRankParameters field feature)
+  addToIndex      _ doc _dbref = S.insertDoc doc
+  removeFromIndex _ doc _dbref = S.deleteDoc
+    (S.documentKey (config :: S.SearchConfig doc (DBRef doc) field feature) doc)
 
 query :: 
   ( IResource doc,Indexable doc,Serializable doc,Eq doc,Typeable doc
@@ -67,8 +72,8 @@ query ::
   , Ix feature,Bounded feature,Typeable feature
   , SearchStatics doc (DBRef doc) field feature
   ) => FTS doc field feature -> [S.Term] -> STM [DBRef doc]
-query sc qs = do
-  se <- readIndex sc
+query fts qs = do
+  se <- readIndex fts
   return $ S.query se qs
 
 queryAutosuggest ::
@@ -77,15 +82,15 @@ queryAutosuggest ::
   , Ix feature,Bounded feature,Typeable feature
   , SearchStatics doc (DBRef doc) field feature
   ) => FTS doc field feature -> [S.Term] -> S.Term -> STM ([(S.Term,Float)],[(DBRef doc,Float)])
-queryAutosuggest sc qs a = do
-  se <- readIndex sc
+queryAutosuggest fts qs a = do
+  se <- readIndex fts
   return $ S.queryAutosuggest se S.NoFilter qs a
 
 instance
   ( SearchStatics doc key field feature
   , Ord key,C.Serialize key
-  , Ix field,C.Serialize field)
-  => C.Serialize (S.SearchEngine doc key field feature) where
+  , Ix field,C.Serialize field
+  ) => C.Serialize (S.SearchEngine doc key field feature) where
   put se = C.put (S.searchIndex se) >> C.put (S.sumFieldLengths se)
   get = do
     si <- C.get
@@ -124,23 +129,18 @@ instance
 
 instance (Typeable doc) => Indexable (S.SearchEngine doc key field feature) where
   key = const ""
---   defPath _ = ".tcachedata/index/"
 
 instance
   ( SearchStatics doc key field feature
   , Typeable doc
   , Typeable key,Ord key,C.Serialize key
   , Typeable field,Ix field,C.Serialize field
-  , Typeable feature)
-  => IResource (S.SearchEngine doc key field feature) where
+  , Typeable feature
+  ) => IResource (S.SearchEngine doc key field feature) where
   keyResource       = key
   writeResource     = defWriteResource
   readResourceByKey = defReadResourceByKey
   delResource       = defDelResource
-
-indexKey :: (Typeable doc) =>
-  Proxy doc -> String
-indexKey pd = show (typeRep pd)
 
 -- Search engine configuration
 

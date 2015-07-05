@@ -11,9 +11,10 @@ module Data.TCache.ID
   , new
   , Ref
   , newRef
-  , lookup
+  , ref
   , deref
   , maybeDeref
+  , refLens
   , listWithID
   , delete
   , update
@@ -24,17 +25,19 @@ import qualified Data.TCache.Defs  as T
 import qualified Data.TCache.Index as T
 import qualified Data.TCache.Index.Map as IndexMap
 
-import           Control.Applicative ((<$>))
+import           Control.Applicative  ((<$>))
+import           Control.Lens.Monadic (MLens,mkMLens)
+import           Data.Functor         (void)
 import qualified Data.Serialize   as C
-import           Data.Serialize.Text ()
+import           Data.Serialize.Text  ()
 import qualified Data.Map         as Map
 import qualified Data.Set         as Set
-import           Data.Text           (Text,pack,unpack)
-import           Data.Traversable    (for)
-import           Data.Typeable       (Typeable,typeRep,Proxy(Proxy))
-import           GHC.Generics        (Generic)
+import           Data.Text            (Text,pack,unpack)
+import           Data.Traversable     (for)
+import           Data.Typeable        (Typeable,typeRep,Proxy(Proxy))
+import           GHC.Generics         (Generic)
 import           Prelude hiding (lookup)
-import           System.Random       (newStdGen,randomRs)
+import           System.Random        (newStdGen,randomRs)
 
 
 newtype ID a
@@ -48,7 +51,7 @@ data WithID a
       _id :: ID a
     , object :: a
     }
-  deriving (Generic,Typeable,Show)
+  deriving (Eq,Generic,Typeable,Show)
 
 deriving instance (Read a) => Read (WithID a)
 
@@ -63,7 +66,7 @@ new :: forall a.
 new x = loop where
   loop = do
     i <- ID <$> T.unsafeIOToSTM (randomText 8)
-    existing <- IndexMap.lookup (IndexMap.field (_id :: WithID a -> ID a) "") i
+    existing <- IndexMap.lookup (IndexMap.field (_id :: WithID a -> ID a)) i
     if Set.null existing
       then return $ WithID i x
       else loop
@@ -71,42 +74,15 @@ new x = loop where
 randomText :: Int -> IO Text
 randomText l = pack . take l . randomRs ('a','z') <$> newStdGen
 
+type Ref a
+  = T.DBRef (WithID a)
+
 newRef ::
   ( T.IResource (WithID a),T.PersistIndex (WithID a),T.Serializable (WithID a)
   , Typeable a
   , T.IResource (Map.Map (ID a) (Set.Set (Ref a)))
   ) => a -> T.STM (Ref a)
 newRef x = T.newDBRef =<< new x
-
-type Ref a
-  = T.DBRef (WithID a)
-
-lookup :: forall a. (T.IResource (WithID a),Typeable a)
-  => ID a -> Ref a
-lookup i = T.getDBRef $ T.keyResource (WithID i undefined :: WithID a)
-
-deref :: (T.IResource (WithID a),Typeable a)
-  => Ref a -> T.STM a
-deref r = maybe err id <$> maybeDeref r where
-  err = error "Data.TCache.ID.deref: ID does not occur in database"
-
-maybeDeref :: (T.IResource (WithID a),Typeable a)
-  => Ref a -> T.STM (Maybe a)
-maybeDeref r = T.readDBRef r >>= \case
-  Just (WithID _ x) -> return $ Just x
-  Nothing           -> return Nothing
-
-listWithID :: forall a.
-  ( T.IResource (WithID a),T.PersistIndex (WithID a),T.Serializable (WithID a)
-  , Typeable a
-  , T.IResource (Map.Map (ID a) (Set.Set (Ref a)))
-  )
-  => T.STM [WithID a]
-listWithID = do
-  ids <- IndexMap.listAll $ IndexMap.field (_id :: WithID a -> ID a) ""
-  (concat <$>) . for ids $ \ (i,refs) -> case Set.toList refs of
-    [r] -> (: []) . WithID i <$> deref r
-    []  -> return []
 
 delete :: (T.IResource (WithID a),Typeable a)
   => Ref a -> T.STM ()
@@ -119,3 +95,34 @@ update r x = do
   case result of
     Just (WithID i _) -> Just <$> T.writeDBRef r (WithID i x)
     Nothing           -> return Nothing
+
+ref :: forall a. (T.IResource (WithID a),Typeable a)
+  => ID a -> Ref a
+ref i = T.getDBRef $ T.keyResource (WithID i undefined :: WithID a)
+
+deref :: (T.IResource (WithID a),Typeable a)
+  => Ref a -> T.STM a
+deref r = maybe err id <$> maybeDeref r where
+  err = error $ "Data.TCache.ID.deref: ID " ++ show r ++ " does not occur in database"
+
+maybeDeref :: (T.IResource (WithID a),Typeable a)
+  => Ref a -> T.STM (Maybe a)
+maybeDeref r = T.readDBRef r >>= \case
+  Just (WithID _ x) -> return $ Just x
+  Nothing           -> return Nothing
+
+refLens :: (T.IResource (WithID a),Typeable a) =>
+  MLens T.STM (Ref a) () a a
+refLens = mkMLens deref ((void .) . update)
+
+listWithID :: forall a.
+  ( T.IResource (WithID a),T.PersistIndex (WithID a),T.Serializable (WithID a)
+  , Typeable a
+  , T.IResource (Map.Map (ID a) (Set.Set (Ref a)))
+  )
+  => T.STM [WithID a]
+listWithID = do
+  ids <- IndexMap.listAll $ IndexMap.field (_id :: WithID a -> ID a)
+  (concat <$>) . for ids $ \ (i,refs) -> case Set.toList refs of
+    [r] -> (: []) . WithID i <$> deref r
+    []  -> return []

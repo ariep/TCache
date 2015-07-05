@@ -71,6 +71,7 @@ library
                    vector-binary-instances >= 0.2 && < 0.3,
                    full-text-search >= 0.2 && < 0.3,
                    transformers >= 0.3 && < 0.5,
+                   transformers-compat >= 0.4 && < 0.5,
                    RefSerialize -any
 
 
@@ -85,6 +86,7 @@ library
                      Data.TCache.Memoization Data.TCache.Triggers
                      Data.Persistent.Collection
                      Data.Persistent.IDynamic
+                     Control.Lens.Monadic
 
 
 

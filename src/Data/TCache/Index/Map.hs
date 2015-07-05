@@ -7,6 +7,9 @@ module Data.TCache.Index.Map
   (
     Field(Fields)
   , field
+  , namedField
+  , fields
+  , namedFields
   , lookup
   , lookupGT
   , lookupLT
@@ -18,6 +21,7 @@ import           Data.TCache.Defs
 import           Data.TCache.Index
 
 import           Data.Functor ((<$>))
+import           Data.Functor.Classes ()
 import           Data.Functor.Identity (Identity(Identity))
 import           Data.Foldable (Foldable,foldMap)
 import qualified Data.Map       as Map
@@ -36,12 +40,21 @@ data Field r f a where
   Fields :: (Foldable f) => (r -> f a) -> String -> Field r f a
   deriving (Typeable)
 
-field :: (r -> a) -> String -> Field r Identity a
-field f s = Fields (Identity . f) s
+namedFields :: (Foldable f) => (r -> f a) -> String -> Field r f a
+namedFields = Fields
+
+fields :: (Foldable f) => (r -> f a) -> Field r f a
+fields f = namedFields f ""
+
+namedField :: (r -> a) -> String -> Field r Identity a
+namedField f s = Fields (Identity . f) s
+
+field :: (r -> a) -> Field r Identity a
+field f = namedField f ""
 
 deriving instance Typeable Identity
-instance (Eq a) => Eq (Identity a) where
-  Identity x == Identity y = x == y
+-- instance (Eq a) => Eq (Identity a) where
+--   Identity x == Identity y = x == y
 
 instance Indexable (Field r f a) where
   key (Fields _ s) = s
