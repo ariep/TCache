@@ -10,9 +10,9 @@ module Data.TCache.Index
   (
     Selector,Record,Property,selector
   , Indexed,Index,emptyIndex,addToIndex,removeFromIndex
+  , LabelledIndex(LabelledIndex)
   , readIndex
   , index
---   , find
   ) where
 
 import           Data.TCache
@@ -40,7 +40,7 @@ class
 
 class
   ( Selector s,Indexable s,Typeable s
-  , IResource (Index s),Typeable (Index s)
+  , Serializable (Index s),Typeable (Index s)
   , Serializable (Record s),Indexable (Record s)
   , Eq (Property s)
   ) => Indexed s where
@@ -48,9 +48,20 @@ class
   emptyIndex :: s -> Index s
   addToIndex,removeFromIndex :: s -> Property s -> DBRef (Record s) -> Index s -> Index s
 
+data LabelledIndex s
+  = LabelledIndex String (Index s)
+  deriving (Typeable)
+
+instance Indexable (LabelledIndex s) where
+  key (LabelledIndex k _index) = k
+
+instance (Serializable (Index s)) => Serializable (LabelledIndex s) where
+  serialize (LabelledIndex _ i) = serialize i
+  deserialKey k b = LabelledIndex k $ deserialize b
+
 -- | Register a trigger for indexing the values of the field passed as parameter.
 -- The indexed field can be used to perform relational-like searches.
-index :: forall s. (Indexed s) => s -> IO ()
+index :: forall s. (Indexed s,IResource (LabelledIndex s)) => s -> IO ()
 index s = do
   atomically checkIndex
   addTrigger $ selectorIndex s
@@ -69,9 +80,9 @@ index s = do
           single (ref,Just object) = Endo $ addToIndex s (selector s object) ref
           single (_  ,Nothing    ) = Endo id
           newIndex = appEndo f (emptyIndex s)
-      writeDBRef indexRef newIndex
+      writeDBRef indexRef $ LabelledIndex (key s) newIndex
 
-selectorIndex :: (Indexed s)
+selectorIndex :: (Indexed s,IResource (LabelledIndex s))
   => s -> DBRef (Record s) -> Maybe (Record s) -> STM ()
 selectorIndex s oldRef maybeNew = do
   maybeOld <- readDBRef oldRef
@@ -87,20 +98,21 @@ selectorIndex s oldRef maybeNew = do
     Nothing -> return ()
     Just f  -> do
       let indexRef = getIndexDBRef s
-      Just oldIndex <- readDBRef indexRef
-      writeDBRef indexRef $ f oldIndex
+      Just (LabelledIndex k oldIndex) <- readDBRef indexRef
+      writeDBRef indexRef $ LabelledIndex k $ f oldIndex
  where
   deleteOld old = removeFromIndex s (selector s old) oldRef
   insertNew new = addToIndex      s (selector s new) (getDBRef . key $ new)
 
--- We use the key of the selector as the key for the associated index.
-getIndexDBRef :: forall s. (Indexed s) => s -> DBRef (Index s)
-getIndexDBRef s = getDBRef $! key s 
+getIndexDBRef :: forall s. (Indexed s,IResource (LabelledIndex s))
+  => s -> DBRef (LabelledIndex s)
+getIndexDBRef s = getDBRef $! key (LabelledIndex (key s) $ emptyIndex s :: LabelledIndex s)
 
-readIndex :: (Indexed s) => s -> STM (Index s)
+readIndex :: (Indexed s,IResource (LabelledIndex s)) => s -> STM (Index s)
 readIndex s = readDBRef (getIndexDBRef s) >>= \case
-  Just i  -> return i
-  Nothing -> error "Data.TCache.Index.readIndex: index not found. Did you register the index?"
+  Just (LabelledIndex _ i) -> return i
+  Nothing                  -> error
+    "Data.TCache.Index.readIndex: index not found. Did you register the index?"
 
 {-
 

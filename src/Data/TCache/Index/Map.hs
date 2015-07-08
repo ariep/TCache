@@ -14,22 +14,26 @@ module Data.TCache.Index.Map
   , lookupGT
   , lookupLT
   , listAll
+  , lookupAll
   ) where
 
 import           Data.TCache
 import           Data.TCache.Defs
 import           Data.TCache.Index
 
-import           Data.Functor ((<$>))
-import           Data.Functor.Classes ()
+import           Control.Monad         (foldM,filterM,(<=<))
+import           Data.Function         (on)
+import           Data.Functor          ((<$>))
+import           Data.Functor.Classes  ()
 import           Data.Functor.Identity (Identity(Identity))
-import           Data.Foldable (Foldable,foldMap)
+import           Data.Foldable         (Foldable,foldMap)
+import           Data.List             (sortBy)
 import qualified Data.Map       as Map
-import           Data.Map   (Map)
-import           Data.Monoid   (Endo(Endo),appEndo)
+import           Data.Map              (Map)
+import           Data.Monoid           (Endo(Endo),appEndo)
 import qualified Data.Set       as Set
-import           Data.Set   (Set)
-import           Data.Typeable (Typeable)
+import           Data.Set              (Set)
+import           Data.Typeable         (Typeable)
 import           Prelude hiding (lookup)
 
 
@@ -53,8 +57,6 @@ field :: (r -> a) -> Field r Identity a
 field f = namedField f ""
 
 deriving instance Typeable Identity
--- instance (Eq a) => Eq (Identity a) where
---   Identity x == Identity y = x == y
 
 instance Indexable (Field r f a) where
   key (Fields _ s) = s
@@ -72,7 +74,7 @@ instance
   ( Serializable r,Indexable r,IResource r,Typeable r
   , Ord a,Typeable a
   , Typeable f,Eq (f a)
-  , IResource (Map a (RowSet r))
+  , Serializable (Map a (RowSet r))
   ) => Indexed (Field r f a) where
   
   type Index (Field r f a)
@@ -84,14 +86,9 @@ instance
   removeFromIndex (Fields _ _) ps r = appEndo e where
     e = foldMap (\ p -> Endo $ Map.update (f . Set.delete r) p) ps
     f x = if Set.null x then Nothing else Just x
-  
---   type Query (Field r f a) k = (Ordering,a)
 
 lookup ::
-  ( Serializable r,Indexable r,IResource r,Typeable r
-  , Ord a,Typeable a
-  , Typeable f,Eq (f a)
-  , IResource (Map a (RowSet r))
+  ( Indexed (Field r f a),Ord a,IResource (LabelledIndex (Field r f a))
   ) => Field r f a -> a -> STM (RowSet r)
 lookup s a = maybe Set.empty id . Map.lookup a <$> readIndex s
 
@@ -99,7 +96,8 @@ lookupGT ::
   ( Serializable r,Indexable r,IResource r,Typeable r
   , Ord a,Typeable a
   , Typeable f,Eq (f a)
-  , IResource (Map a (RowSet r))
+  , Serializable (Map a (RowSet r))
+  , IResource (LabelledIndex (Field r f a))
   ) => Field r f a -> a -> STM (RowSet r)
 lookupGT s a = do
   m <- readIndex s
@@ -110,15 +108,31 @@ lookupLT ::
   ( Serializable r,Indexable r,IResource r,Typeable r
   , Ord a,Typeable a
   , Typeable f,Eq (f a)
-  , IResource (Map a (RowSet r))
+  , Serializable (Map a (RowSet r))
+  , IResource (LabelledIndex (Field r f a))
   ) => Field r f a -> a -> STM (RowSet r)
 lookupLT s a = do
   m <- readIndex s
   let (smaller,equal,_) = Map.splitLookup a m
   return . Set.unions $ Map.elems smaller ++ maybe [] (: []) equal
 
-listAll :: (Indexed (Field r f a)) => Field r f a -> STM [(a,RowSet r)]
+listAll :: (Indexed (Field r f a),IResource (LabelledIndex (Field r f a)))
+  => Field r f a -> STM [(a,RowSet r)]
 listAll s = Map.assocs <$> readIndex s
+
+lookupAll :: forall r a.
+  ( Indexed (Field r Set a),Ord a
+  , IResource (LabelledIndex (Field r Set a))
+  ) => Field r Set a -> [a] -> STM [DBRef r]
+lookupAll s [] = error "Data.TCache.Index.Map.lookupAll: empty list of search parameters"
+lookupAll s qs = do
+  sized <- mapM (\ q -> (,) q . Set.size <$> lookup s q) qs
+  let ((q,_) : rest) = sortBy (compare `on` snd) sized
+  rs <- Set.toList <$> lookup s q
+  foldM restrict rs $ map fst rest
+ where
+  restrict :: [DBRef r] -> a -> STM [DBRef r]
+  restrict rs q = filterM (return . maybe False (Set.member q . selector s) <=< readDBRef) rs
 
 {-
 

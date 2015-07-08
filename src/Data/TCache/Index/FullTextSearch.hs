@@ -71,6 +71,7 @@ query ::
   , Bounded field,C.Serialize field,Ix field,Typeable field
   , Ix feature,Bounded feature,Typeable feature
   , SearchStatics doc (DBRef doc) field feature
+  , IResource (LabelledIndex (FTS doc field feature))
   ) => FTS doc field feature -> [S.Term] -> STM [DBRef doc]
 query fts qs = do
   se <- readIndex fts
@@ -81,6 +82,7 @@ queryAutosuggest ::
   , Bounded field,C.Serialize field,Ix field,Typeable field
   , Ix feature,Bounded feature,Typeable feature
   , SearchStatics doc (DBRef doc) field feature
+  , IResource (LabelledIndex (FTS doc field feature))
   ) => FTS doc field feature -> [S.Term] -> S.Term -> STM ([(S.Term,Float)],[(DBRef doc,Float)])
 queryAutosuggest fts qs a = do
   se <- readIndex fts
