@@ -14,6 +14,7 @@ module Data.TCache.ID
   , newRef
   , ref
   , deref
+  , derefObject
   , refLens
   , listWithID
   , delete
@@ -111,6 +112,10 @@ deref :: (T.IResource (WithID a),Typeable a)
   => Ref a -> T.STM (WithID a)
 deref r = maybe err id <$> T.readDBRef r where
   err = error $ "Data.TCache.ID.deref: ID " ++ show r ++ " does not occur in database"
+
+derefObject :: (T.IResource (WithID a),Typeable a)
+  => Ref a -> T.STM a
+derefObject r = _object <$> deref r
 
 refLens :: (T.IResource (WithID a),Typeable a) =>
   MLens T.STM (Ref a) (Maybe ()) a a
