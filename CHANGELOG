@@ -1,0 +1,25 @@
+0.14 Add possibility to use multiple stores simultaneously
+
+0.13 Rewrite indexing system
+
+0.12.0 space in index data in indexQuery.hs and IndexText.hs triggered errors in the AWS backend.
+The space has been changed by '-'. So rename the "index *" files in the TCache folder
+in order to be recognized.
+
+0.11.0.0 added setIndexParsist to define persistence for indexes by type. started the addition of readDBRefs, readResources and so on for simultaneous read, writes and deletes of
+objects of the same type.
+
+0.10.2.0 Added setDefaultPersist and modified the signature of setPersist in Data.TCache.DefaultPersistence.
+Fixed issues with ghc 7.6.3
+
+0.10  version add memoization and a persistent and transactional collection/queue.
+
+0.10.0.8 subversion add cachedByKeySTM
+
+0.10.0.9 fixed an error in clearSyncChacheProc and SynWrite Asyncronous that checked the cache continuously
+
+See "Data.TCache" for details
+
+In this release:
+
+Dropped Data.Hashtable (deprecated). Now it uses the package hashtables
