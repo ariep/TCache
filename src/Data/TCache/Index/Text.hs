@@ -49,7 +49,7 @@ instance
 
 lookup ::
   ( Indexed (Field r),IResource (LabelledIndex (Field r))
-  ) => Field r -> Int -> Text -> STM [(DBRef r,Double,Text)]
-lookup s n t = I.lookup n t <$> readIndex s
+  ) => Persist -> Field r -> Int -> Text -> STM [(DBRef r,Double,Text)]
+lookup store s n t = I.lookup n t <$> readIndex store s
 
 deriving instance Typeable Down

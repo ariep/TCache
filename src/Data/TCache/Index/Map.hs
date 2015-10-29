@@ -89,8 +89,8 @@ instance
 
 lookup ::
   ( Indexed (Field r f a),Ord a,IResource (LabelledIndex (Field r f a))
-  ) => Field r f a -> a -> STM (RowSet r)
-lookup s a = maybe Set.empty id . Map.lookup a <$> readIndex s
+  ) => Persist -> Field r f a -> a -> STM (RowSet r)
+lookup store s a = maybe Set.empty id . Map.lookup a <$> readIndex store s
 
 lookupGT ::
   ( Serializable r,Indexable r,IResource r,Typeable r
@@ -98,9 +98,9 @@ lookupGT ::
   , Typeable f,Eq (f a)
   , Serializable (Map a (RowSet r))
   , IResource (LabelledIndex (Field r f a))
-  ) => Field r f a -> a -> STM (RowSet r)
-lookupGT s a = do
-  m <- readIndex s
+  ) => Persist -> Field r f a -> a -> STM (RowSet r)
+lookupGT store s a = do
+  m <- readIndex store s
   let (_,equal,greater) = Map.splitLookup a m
   return . Set.unions $ maybe [] (: []) equal ++ Map.elems greater
 
@@ -110,29 +110,29 @@ lookupLT ::
   , Typeable f,Eq (f a)
   , Serializable (Map a (RowSet r))
   , IResource (LabelledIndex (Field r f a))
-  ) => Field r f a -> a -> STM (RowSet r)
-lookupLT s a = do
-  m <- readIndex s
+  ) => Persist -> Field r f a -> a -> STM (RowSet r)
+lookupLT store s a = do
+  m <- readIndex store s
   let (smaller,equal,_) = Map.splitLookup a m
   return . Set.unions $ Map.elems smaller ++ maybe [] (: []) equal
 
 listAll :: (Indexed (Field r f a),IResource (LabelledIndex (Field r f a)))
-  => Field r f a -> STM [(a,RowSet r)]
-listAll s = Map.assocs <$> readIndex s
+  => Persist -> Field r f a -> STM [(a,RowSet r)]
+listAll store s = Map.assocs <$> readIndex store s
 
 lookupAll :: forall r a.
   ( Indexed (Field r Set a),Ord a
   , IResource (LabelledIndex (Field r Set a))
-  ) => Field r Set a -> [a] -> STM [DBRef r]
-lookupAll s [] = error "Data.TCache.Index.Map.lookupAll: empty list of search parameters"
-lookupAll s qs = do
-  sized <- mapM (\ q -> (,) q . Set.size <$> lookup s q) qs
+  ) => Persist -> Field r Set a -> [a] -> STM [DBRef r]
+lookupAll _     s [] = error "Data.TCache.Index.Map.lookupAll: empty list of search parameters"
+lookupAll store s qs = do
+  sized <- mapM (\ q -> (,) q . Set.size <$> lookup store s q) qs
   let ((q,_) : rest) = sortBy (compare `on` snd) sized
-  rs <- Set.toList <$> lookup s q
+  rs <- Set.toList <$> lookup store s q
   foldM restrict rs $ map fst rest
  where
   restrict :: [DBRef r] -> a -> STM [DBRef r]
-  restrict rs q = filterM (return . maybe False (Set.member q . selector s) <=< readDBRef) rs
+  restrict rs q = filterM (return . maybe False (Set.member q . selector s) <=< readDBRef store) rs
 
 {-
 

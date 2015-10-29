@@ -44,8 +44,8 @@ class IResource a where
         Since STM transactions retry, readResourceByKey may be called twice in strange situations. So it must be idempotent, not only in the result but also in the effect in the database
         . However, because it is executed by 'safeIOToSTM' it is guaranteed that the execution is not interrupted.
         -}
-        readResourceByKey :: String -> IO(Maybe a)
-        readResourceByKey k= return . head =<< readResourcesByKey [k]
+        readResourceByKey :: String -> IO (Maybe a)
+        readResourceByKey k = return . head =<< readResourcesByKey [k]
         -- | hopefully optimized read of many objects by key.
         readResourcesByKey :: [String] -> IO [Maybe a]
         readResourcesByKey = mapM readResourceByKey
@@ -63,20 +63,20 @@ class IResource a where
         -- Commit code must be located in the postcondition. (see  `setConditions`)
         -- Since there is no provision for rollback from failure in writing to
         -- persistent storage, 'writeResource' must retry until success.
-    	writeResource:: a-> IO()
-    	writeResource r= writeResources [r]
-    	
-    	-- | multiple write (hopefully) in a single request. That is up to you and your backend
-    	-- . Defined by default as 'mapM_ writeResource'
-    	writeResources :: [a] -> IO()
-    	writeResources= mapM_ writeResource
+        writeResource:: a-> IO ()
+        writeResource r = writeResources [r]
+        
+        -- | multiple write (hopefully) in a single request. That is up to you and your backend
+        -- . Defined by default as 'mapM_ writeResource'
+        writeResources :: [a] -> IO ()
+        writeResources = mapM_ writeResource
 
         -- | Delete the resource. It is called syncronously. So it must commit   
-    	delResource:: a-> IO()
-    	delResource x= delResources [x]
-    	
-        delResources :: [a] -> IO()
-        delResources= mapM_ delResource
+        delResource:: a-> IO ()
+        delResource x = delResources [x]
+        
+        delResources :: [a] -> IO ()
+        delResources = mapM_ delResource
 -- | Resources data definition used by 'withSTMResources'    
 data Resources a b
        = Retry             -- ^ forces a retry
