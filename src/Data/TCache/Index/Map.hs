@@ -38,7 +38,7 @@ import           Prelude hiding (lookup)
 
 
 type RowSet r
-  = Set (DBRef r)
+  = Set Key
 
 data Field r f a where
   Fields :: (Foldable f) => (r -> f a) -> String -> Field r f a
@@ -82,9 +82,9 @@ instance
   
   emptyIndex _ = Map.empty
   addToIndex      (Fields _ _) ps r = appEndo e where
-    e = foldMap (\ p -> Endo $ Map.insertWith Set.union p $ Set.singleton r) ps
+    e = foldMap (\ p -> Endo $ Map.insertWith Set.union p $ Set.singleton $ keyObjDBRef r) ps
   removeFromIndex (Fields _ _) ps r = appEndo e where
-    e = foldMap (\ p -> Endo $ Map.update (f . Set.delete r) p) ps
+    e = foldMap (\ p -> Endo $ Map.update (f . Set.delete (keyObjDBRef r)) p) ps
     f x = if Set.null x then Nothing else Just x
 
 lookup ::
@@ -123,7 +123,7 @@ listAll store s = Map.assocs <$> readIndex store s
 lookupAll :: forall r a.
   ( Indexed (Field r Set a),Ord a
   , IResource (LabelledIndex (Field r Set a))
-  ) => Persist -> Field r Set a -> [a] -> STM [DBRef r]
+  ) => Persist -> Field r Set a -> [a] -> STM [Key]
 lookupAll _     s [] = error "Data.TCache.Index.Map.lookupAll: empty list of search parameters"
 lookupAll store s qs = do
   sized <- mapM (\ q -> (,) q . Set.size <$> lookup store s q) qs
@@ -131,8 +131,8 @@ lookupAll store s qs = do
   rs <- Set.toList <$> lookup store s q
   foldM restrict rs $ map fst rest
  where
-  restrict :: [DBRef r] -> a -> STM [DBRef r]
-  restrict rs q = filterM (return . maybe False (Set.member q . selector s) <=< readDBRef store) rs
+  restrict :: [Key] -> a -> STM [Key]
+  restrict rs q = filterM (return . maybe False (Set.member q . selector s) <=< readDBRef store . getDBRef store) rs
 
 {-
 

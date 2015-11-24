@@ -66,7 +66,7 @@ index store s = do
   atomically checkIndex
   addTrigger $ selectorIndex store s
  where
-  indexRef = getIndexDBRef s
+  indexRef = getIndexDBRef store s
   checkIndex = readDBRef store indexRef >>= \case
     Just _  -> return ()
     Nothing -> do
@@ -74,7 +74,9 @@ index store s = do
       let tp = show (typeRep (Proxy :: Proxy (Property s)))
       safeIOToSTM . putStrLn
         $ "The index from " ++ tr ++ " to " ++ tp ++ " is not there; generating..."
-      refs <- map getDBRef <$> safeIOToSTM (listResources store (Proxy :: Proxy (Record s)))
+      refs <- map (getDBRef store) <$>
+        safeIOToSTM (listResources store (Proxy :: Proxy (Record s)))
+      safeIOToSTM . putStrLn $ "  found " ++ show (length refs) ++ " objects."
       objects <- mapM (readDBRef store) refs
       let f = foldMap single (zip refs objects)
           single (ref,Just object) = Endo $ addToIndex s (selector s object) ref
@@ -97,20 +99,20 @@ selectorIndex store s oldRef maybeNew = do
   case indexChanges of
     Nothing -> return ()
     Just f  -> do
-      let indexRef = getIndexDBRef s
+      let indexRef = getIndexDBRef store s
       Just (LabelledIndex k oldIndex) <- readDBRef store indexRef
       writeDBRef store indexRef $ LabelledIndex k $ f oldIndex
  where
   deleteOld old = removeFromIndex s (selector s old) oldRef
-  insertNew new = addToIndex      s (selector s new) (getDBRef . key $ new)
+  insertNew new = addToIndex      s (selector s new) (getDBRef store . key $ new)
 
 getIndexDBRef :: forall s. (Indexed s,IResource (LabelledIndex s))
-  => s -> DBRef (LabelledIndex s)
-getIndexDBRef s = getDBRef $! key (LabelledIndex (key s) $ emptyIndex s :: LabelledIndex s)
+  => Persist -> s -> DBRef (LabelledIndex s)
+getIndexDBRef store s = getDBRef store $! key (LabelledIndex (key s) $ emptyIndex s :: LabelledIndex s)
 
 readIndex :: (Indexed s,IResource (LabelledIndex s))
   => Persist -> s -> STM (Index s)
-readIndex store s = readDBRef store (getIndexDBRef s) >>= \case
+readIndex store s = readDBRef store (getIndexDBRef store s) >>= \case
   Just (LabelledIndex _ i) -> return i
   Nothing                  -> error
     "Data.TCache.Index.readIndex: index not found. Did you register the index?"

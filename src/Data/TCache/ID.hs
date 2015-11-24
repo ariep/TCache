@@ -14,6 +14,8 @@ module Data.TCache.ID
   , newRef
   , ref
   , deref
+  , fromID
+  , fromIDMaybe
   , derefObject
   , refLens
   , listWithID
@@ -69,7 +71,7 @@ instance T.Indexable (WithID a) where
 new :: forall a.
   ( T.IResource (WithID a),T.Serializable (WithID a)
   , Typeable a
-  , T.Serializable (Map.Map (ID a) (Set.Set (Ref a)))
+  , T.Serializable (Map.Map (ID a) (Set.Set T.Key))
   , T.IResource (T.LabelledIndex (IndexMap.Field (WithID a) Identity (ID a)))
   ) => T.Persist -> a -> T.STM (WithID a)
 new store x = loop where
@@ -89,10 +91,13 @@ type Ref a
 newRef ::
   ( T.IResource (WithID a),T.Serializable (WithID a)
   , Typeable a
-  , T.Serializable (Map.Map (ID a) (Set.Set (Ref a)))
+  , T.Serializable (Map.Map (ID a) (Set.Set T.Key))
   , T.IResource (T.LabelledIndex (IndexMap.Field (WithID a) Identity (ID a)))
-  ) => T.Persist -> a -> T.STM (Ref a)
-newRef store x = T.newDBRef store =<< new store x
+  ) => T.Persist -> a -> T.STM (ID a)
+newRef store x = do
+  withID <- new store x
+  T.newDBRef store withID
+  return $ __ID withID
 
 delete :: (T.IResource (WithID a),Typeable a)
   => T.Persist -> Ref a -> T.STM ()
@@ -105,13 +110,21 @@ update store r x = T.readDBRef store r >>= \case
   Nothing           -> return Nothing
 
 ref :: forall a. (T.IResource (WithID a),Typeable a)
-  => ID a -> Ref a
-ref i = T.getDBRef $ T.key (WithID i undefined :: WithID a)
+  => T.Persist -> ID a -> Ref a
+ref store i = T.getDBRef store $ T.key (WithID i undefined :: WithID a)
 
 deref :: (T.IResource (WithID a),Typeable a)
   => T.Persist -> Ref a -> T.STM (WithID a)
 deref store r = maybe err id <$> T.readDBRef store r where
   err = error $ "Data.TCache.ID.deref: ID " ++ show r ++ " does not occur in database"
+
+fromID :: (T.IResource (WithID a),Typeable a)
+  => T.Persist -> ID a -> T.STM (WithID a)
+fromID store i = deref store $ ref store i
+
+fromIDMaybe :: (T.IResource (WithID a),Typeable a)
+  => T.Persist -> ID a -> T.STM (Maybe (WithID a))
+fromIDMaybe store i = T.readDBRef store $ ref store i
 
 derefObject :: (T.IResource (WithID a),Typeable a)
   => T.Persist -> Ref a -> T.STM a
@@ -124,11 +137,11 @@ refLens store = mkMLens (fmap _object . deref store) (update store)
 listWithID :: forall a.
   ( T.IResource (WithID a),T.Serializable (WithID a)
   , Typeable a
-  , T.Serializable (Map.Map (ID a) (Set.Set (Ref a)))
+  , T.Serializable (Map.Map (ID a) (Set.Set T.Key))
   , T.IResource (T.LabelledIndex (IndexMap.Field (WithID a) Identity (ID a)))
   ) => T.Persist -> T.STM [WithID a]
 listWithID store = do
   ids <- IndexMap.listAll store $ IndexMap.field (__ID :: WithID a -> ID a)
   (concat <$>) . for ids $ \ (_i,refs) -> case Set.toList refs of
-    [r] -> (: []) <$> deref store r
+    [r] -> (: []) <$> deref store (T.getDBRef store r)
     []  -> return []

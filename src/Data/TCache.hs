@@ -229,9 +229,9 @@ clearsyncCache just pass elements from 2 to 1
   , flushKey
   , invalidateKey
   , flushAll
-  , Cache
-  , setCache
-  , newCache
+  -- , Cache
+  -- , setCache
+  -- , newCache
   --, refcache
   , syncCache
   , setConditions
@@ -270,46 +270,14 @@ import           System.Time
 --import Debug.Trace
 --(!>) = flip trace
 
-type IResource a = (Typeable a, Indexable a, Serializable a)
 
--- there are two references to the DBRef here
--- The Maybe one keeps it alive until the cache releases it for *Resources
--- calls which does not reference dbrefs explicitly
--- The weak reference keeps the dbref alive until is it not referenced elsewere
-data CacheElem
-  = forall a. (IResource a, Typeable a) => CacheElem (Maybe (DBRef a)) (Weak (DBRef a))
-
-type Ht
-  = H.BasicHashTable String CacheElem
-type Hts
-  = Map.Map TypeRep Ht
-
--- Contains the hashtable and last sync time.
-type Cache
-  = IORef (Hts,Integer)
-
-data CheckTPVarFlags
-  = AddToHash
-  | NoAddToHash
-
--- | Set the cache. This is useful for hot loaded modules that will update an existing cache. Experimental
-setCache :: Cache -> IO ()
-setCache ref = readIORef ref >>= \ch -> writeIORef refcache ch
-
--- | The cache holder. Established by default
-refcache :: Cache
-refcache = unsafePerformIO $ newCache >>= newIORef
-
--- | Creates a new cache. Experimental.
-newCache  :: IO (Hts,Integer)
-newCache = return (Map.empty,0)
 
 -- | Return the total number of DBRefs in the cache. For debug purposes.
 -- This does not count the number of objects in the cache since many of the DBRef
 -- may not have the pointed object loaded. It's O(n).
-numElems :: IO Int
-numElems = do
-  (cache,_) <- readIORef refcache
+numElems :: Persist -> IO Int
+numElems store = do
+  (cache,_) <- readIORef $ cache store
   elems <- htsToList cache
   return $ length elems
 
@@ -320,11 +288,11 @@ deRefWeakSTM = unsafeIOToSTM . deRefWeak
 --    (cache, _) <- readIORef refcache
 --    H.delete cache k    -- !> ("delete " ++ k)
 
-fixToCache :: (IResource a, Typeable a) => DBRef a -> IO ()
-fixToCache dbref@(DBRef k _tv)= do
-  (cache,_) <- readIORef refcache
-  w <- mkWeakPtr dbref $ Just $ fixToCache dbref
-  htsInsert cache k (CacheElem (Just dbref) w)
+fixToCache :: (IResource a, Typeable a) => Persist -> DBRef a -> IO ()
+fixToCache store dbref@(DBRef k _tv)= do
+  (hts,_) <- readIORef $ cache store
+  w <- mkWeakPtr dbref $ Just $ fixToCache store dbref
+  htsInsert store hts k (CacheElem (Just dbref) w)
   return ()
 
 -- | Return the reference value. If it is not in the cache, it is fetched
@@ -396,14 +364,14 @@ writeDBRef store dbref@(DBRef oldkey tv) x = x `seq` do
 instance Show (DBRef a) where
   show (DBRef  k _) = "DBRef \""++ k ++ "\""
 
-instance (IResource a, Typeable a) => Read (DBRef a) where
-  readsPrec n str1 = readit str
-   where
-    str = dropWhile isSpace str1
-    readit ('D' : 'B' : 'R' : 'e' : 'f' : ' ' : '\"' : str1) =
-      let   (key,nstr) =  break (== '\"') str1
-      in  [( getDBRef key :: DBRef a, tail nstr)]
-    readit  _ = []
+-- instance (IResource a, Typeable a) => Read (DBRef a) where
+--   readsPrec n str1 = readit str
+--    where
+--     str = dropWhile isSpace str1
+--     readit ('D' : 'B' : 'R' : 'e' : 'f' : ' ' : '\"' : str1) =
+--       let   (key,nstr) =  break (== '\"') str1
+--       in  [( getDBRef key :: DBRef a, tail nstr)]
+--     readit  _ = []
 
 instance Eq (DBRef a) where
   DBRef k _ == DBRef k' _ = k == k'
@@ -411,9 +379,9 @@ instance Eq (DBRef a) where
 instance Ord (DBRef a) where
   compare (DBRef k _) (DBRef k' _) = compare k k'
 
-instance (IResource a, Typeable a) => C.Serialize (DBRef a) where
-  get = getDBRef <$> C.get
-  put = C.put . keyObjDBRef
+-- instance (IResource a, Typeable a) => C.Serialize (DBRef a) where
+--   get = getDBRef <$> C.get
+--   put = C.put . keyObjDBRef
 
 -- | Return the key of the object pointed to by the DBRef
 keyObjDBRef :: DBRef a -> String
@@ -425,13 +393,13 @@ keyObjDBRef (DBRef k _) = k
 -- of objects with unused embedded DBRef's do not need to marshall them eagerly.
 -- This also avoids unnecessary cache lookups of the pointed objects.
 {-# NOINLINE getDBRef #-}
-getDBRef :: forall a. (Typeable a, IResource a) => Key -> DBRef a
-getDBRef key = unsafePerformIO $! getDBRef1 $! key where
+getDBRef :: forall a. (Typeable a, IResource a) => Persist -> Key -> DBRef a
+getDBRef store key = unsafePerformIO $! getDBRef1 $! key where
  getDBRef1 :: (Typeable a, IResource a) => Key -> IO (DBRef a)
  getDBRef1 key = do
-  (cache,_) <- readIORef refcache -- !> ("getDBRef "++ key)
+  (hts,_) <- readIORef $ cache store -- !> ("getDBRef "++ key)
   takeMVar getRefFlag
-  r <- htsLookup (Proxy :: Proxy a) cache key
+  r <- htsLookup (Proxy :: Proxy a) hts key
   case r of
     Just (CacheElem mdb w) -> do
       putMVar getRefFlag ()
@@ -441,15 +409,15 @@ getDBRef key = unsafePerformIO $! getDBRef1 $! key where
           case mdb of
             Nothing -> return $! castErr "1" dbref  -- !> "just"
             Just _  -> do
-              htsInsert cache key (CacheElem Nothing w) --to notify when the DBREf leave its reference
+              htsInsert store hts key (CacheElem Nothing w) --to notify when the DBREf leave its reference
               return $! castErr "2" dbref
         Nothing -> finalize w >> getDBRef1 key -- !> "finalize"  -- the weak pointer has not executed his finalizer
     
     Nothing -> do
       tv <- newTVarIO NotRead                              -- !> "Nothing"
       dbref <- evaluate $ DBRef key  tv
-      w <- mkWeakPtr  dbref . Just $ fixToCache dbref
-      htsInsert cache key (CacheElem Nothing w)
+      w <- mkWeakPtr  dbref . Just $ fixToCache store dbref
+      htsInsert store hts key (CacheElem Nothing w)
       putMVar getRefFlag ()
       return dbref
 
@@ -508,7 +476,7 @@ newDBRefIO x= do
 {-# NOINLINE newDBRef #-}
 newDBRef :: (IResource a, Typeable a) => Persist -> a -> STM (DBRef a)
 newDBRef store x = do
-  let ref = getDBRef $! key x
+  let ref = getDBRef store $! key x
 
   mr <- readDBRef store ref
   case mr of
@@ -564,37 +532,37 @@ flushDBRef ::  (IResource a, Typeable a) => DBRef a -> STM ()
 flushDBRef (DBRef _ tv) = writeTVar tv NotRead
 
 -- | flush the element with the given key
-flushKey :: (Typeable a) => Proxy a -> Key -> STM ()
-flushKey proxy key = do
-  (cache,time) <- unsafeIOToSTM $ readIORef refcache
-  c <- unsafeIOToSTM $ htsLookup proxy cache key
+flushKey :: (Typeable a) => Persist -> Proxy a -> Key -> STM ()
+flushKey store proxy key = do
+  (hts,time) <- unsafeIOToSTM $ readIORef $ cache store
+  c <- unsafeIOToSTM $ htsLookup proxy hts key
   case c of
     Just (CacheElem _ w) -> do
       mr <- unsafeIOToSTM $ deRefWeak w
       case mr of
         Just (DBRef k tv) -> writeTVar tv NotRead
-        Nothing -> unsafeIOToSTM (finalize w) >> flushKey proxy key
+        Nothing -> unsafeIOToSTM (finalize w) >> flushKey store proxy key
     Nothing   -> return ()
 
 -- | label the object as not existent in database
-invalidateKey :: (Typeable a) => Proxy a -> Key -> STM ()
-invalidateKey proxy key = do
-  (cache,time) <- unsafeIOToSTM $ readIORef refcache
-  c <- unsafeIOToSTM $ htsLookup proxy cache key
+invalidateKey :: (Typeable a) => Persist -> Proxy a -> Key -> STM ()
+invalidateKey store proxy key = do
+  (hts,time) <- unsafeIOToSTM $ readIORef $ cache store
+  c <- unsafeIOToSTM $ htsLookup proxy hts key
   case c of
     Nothing               -> return ()
     Just  (CacheElem _ w) -> do
       mr <- unsafeIOToSTM $ deRefWeak w
       case mr of
         Just (DBRef k tv) -> writeTVar tv DoNotExist
-        Nothing           -> unsafeIOToSTM (finalize w) >> flushKey proxy key
+        Nothing           -> unsafeIOToSTM (finalize w) >> flushKey store proxy key
 
 
 -- | drops the entire cache.
-flushAll :: STM ()
-flushAll = do
-  (cache,time) <- unsafeIOToSTM $ readIORef refcache
-  elms <- unsafeIOToSTM $ htsToList cache
+flushAll :: Persist -> STM ()
+flushAll store = do
+  (hts,time) <- unsafeIOToSTM $ readIORef $ cache store
+  elms <- unsafeIOToSTM $ htsToList hts
   mapM_ del elms
  where
   del (_,CacheElem _ w) = do
@@ -608,17 +576,17 @@ timeInteger = do
   TOD t _ <- getClockTime
   return t
 
-releaseTPVars :: (IResource a,Typeable a) => [a] -> Hts -> STM ()
-releaseTPVars rs cache = mapM_ (releaseTPVar cache) rs
+releaseTPVars :: (IResource a,Typeable a) => Persist -> [a] -> Hts -> STM ()
+releaseTPVars store rs hts = mapM_ (releaseTPVar store hts) rs
 
-releaseTPVar :: forall a. (IResource a,Typeable a) => Hts -> a -> STM ()
-releaseTPVar cache r = do
-  c <- unsafeIOToSTM $ htsLookup (Proxy :: Proxy a) cache keyr
+releaseTPVar :: forall a. (IResource a,Typeable a) => Persist -> Hts -> a -> STM ()
+releaseTPVar store hts r = do
+  c <- unsafeIOToSTM $ htsLookup (Proxy :: Proxy a) hts keyr
   case c of
     Just (CacheElem _ w) -> do
       mr <- unsafeIOToSTM $ deRefWeak w
       case mr of
-        Nothing -> unsafeIOToSTM (finalize w) >> releaseTPVar cache  r
+        Nothing -> unsafeIOToSTM (finalize w) >> releaseTPVar store hts r
         Just dbref@(DBRef key tv) -> do
           applyTriggers [dbref] [Just (castErr "4" r)]
           t <- unsafeIOToSTM  timeInteger
@@ -626,22 +594,22 @@ releaseTPVar cache r = do
     Nothing              -> do
       ti  <- unsafeIOToSTM timeInteger
       tvr <- newTVar NotRead
-      dbref <- unsafeIOToSTM . evaluate $ DBRef keyr  tvr
+      dbref <- unsafeIOToSTM . evaluate $ DBRef keyr tvr
       applyTriggers [dbref] [Just r]
       writeTVar tvr . Exist $ Elem r ti ti
-      w <- unsafeIOToSTM . mkWeakPtr dbref $ Just $ fixToCache dbref
-      unsafeIOToSTM $ htsInsert cache keyr
+      w <- unsafeIOToSTM . mkWeakPtr dbref $ Just $ fixToCache store dbref
+      unsafeIOToSTM $ htsInsert store hts keyr
         (CacheElem (Just dbref) w) -- accessed and modified XXX
  where
   keyr = key r
 
 delListFromHash :: forall a. (Typeable a,IResource a) => Hts -> [a] -> STM ()
-delListFromHash cache xs = mapM_ del xs
+delListFromHash hts xs = mapM_ del xs
  where
   del :: IResource a => a -> STM ()
   del x = do
     let keyx = key x
-    mr <- unsafeIOToSTM $ htsLookup (Proxy :: Proxy a) cache keyx
+    mr <- unsafeIOToSTM $ htsLookup (Proxy :: Proxy a) hts keyx
     case mr of
       Nothing -> return ()
       Just (CacheElem _ w) -> do
@@ -650,15 +618,15 @@ delListFromHash cache xs = mapM_ del xs
           Just dbref@(DBRef _ tv) -> writeTVar tv DoNotExist
           Nothing -> unsafeIOToSTM (finalize w) >> del x
 
-updateListToHash :: Hts -> [(String,CacheElem)] -> IO ()
-updateListToHash = mapM_ . uncurry . htsInsert
+updateListToHash :: Persist -> Hts -> [(String,CacheElem)] -> IO ()
+updateListToHash store = mapM_ . uncurry . htsInsert store
 
-htsInsert :: Hts -> String -> CacheElem -> IO ()
-htsInsert hts k v = case selectCache tr hts of
+htsInsert :: Persist -> Hts -> String -> CacheElem -> IO ()
+htsInsert store hts k v = case selectCache tr hts of
   Nothing -> do
     ht <- H.new
     H.insert ht k v
-    modifyIORef' refcache (\ (m,i) -> (Map.insert tr ht m,i))
+    modifyIORef' (cache store) (\ (m,i) -> (Map.insert tr ht m,i))
   Just ht -> H.insert ht k v
  where
   tr :: TypeRep
@@ -701,12 +669,12 @@ criticalSection mv f = bracket
 -- Cache writes allways save a coherent state. As always, only the modified objects are written.
 syncCache :: Persist -> IO ()
 syncCache store = criticalSection saving $ do
-  (cache,lastSync) <- readIORef refcache  --`debug` "syncCache"
+  (hts,lastSync) <- readIORef $ cache store --`debug` "syncCache"
   t2 <- timeInteger
-  elems <- htsToList cache
+  elems <- htsToList hts
   (tosave,_,_) <- atomically $ extract elems lastSync
   save store tosave
-  writeIORef refcache (cache,t2)
+  writeIORef (cache store) (hts,t2)
 
 
 data SyncMode
@@ -757,18 +725,18 @@ atomicallySync store proc = do
 --  'defaultCheck' is the one implemented to be passed by default. Look at it to understand the clearing criteria.
 clearSyncCache :: Persist -> (Integer -> Integer -> Integer -> Bool) -> Int -> IO ()
 clearSyncCache store check sizeObjects = criticalSection saving $ do
-  (cache,lastSync) <- readIORef refcache
+  (hts,lastSync) <- readIORef $ cache store
   t <- timeInteger
-  elems <- htsToList cache
+  elems <- htsToList hts
   (tosave,elems,size) <- atomically $ extract elems lastSync
   save store tosave
   when (size > sizeObjects) $
-    forkIO (filtercache t cache lastSync elems) >> performGC
-  writeIORef refcache (cache,t)
+    forkIO (filtercache t hts lastSync elems) >> performGC
+  writeIORef (cache store) (hts,t)
  where
   -- delete elems from the cache according with the checking criteria
   filtercache :: Integer -> Hts -> Integer -> [CacheElem] -> IO ()
-  filtercache t cache lastSync elems = mapM_ filter elems where
+  filtercache t hts lastSync elems = mapM_ filter elems where
     filter (CacheElem Nothing w) = return ()  -- alive because the dbref is being referenced elsewere
     filter (CacheElem (Just (DBRef key _ :: DBRef a)) w) = do
       mr <- deRefWeak w
@@ -780,7 +748,7 @@ clearSyncCache store check sizeObjects = criticalSection saving $ do
             Exist (Elem x lastAccess _ ) ->
               if check t lastAccess lastSync
                 then do
-                  unsafeIOToSTM $ htsInsert cache key (CacheElem Nothing w)
+                  unsafeIOToSTM $ htsInsert store hts key (CacheElem Nothing w)
                   writeTVar tv NotRead
                 else return ()
             _    -> return ()

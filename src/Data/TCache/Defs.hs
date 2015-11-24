@@ -3,6 +3,8 @@
 {-# LANGUAGE TypeSynonymInstances #-}
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE DeriveDataTypeable #-}
+{-# LANGUAGE ConstraintKinds #-}
+{-# LANGUAGE ExistentialQuantification #-}
 {- | some internal definitions. To use default persistence, import
 @Data.TCache.DefaultPersistence@ instead -}
 module Data.TCache.Defs where
@@ -12,8 +14,10 @@ import           Control.Concurrent.STM (TVar)
 import           Control.Exception as Exception
 import           Control.Monad          (when,replicateM)
 import qualified Data.ByteString.Lazy.Char8 as B
+import qualified Data.HashTable.IO as H
 import           Data.IORef
 import           Data.List              (elemIndices,isInfixOf,stripPrefix)
+import qualified Data.Map          as Map
 import           Data.Maybe             (fromJust,catMaybes)
 import           Data.Typeable
 import           System.Directory
@@ -33,6 +37,7 @@ import           System.IO
   )
 import           System.IO.Unsafe
 import           System.IO.Error
+import           System.Mem.Weak
 
 --import Debug.Trace
 --(!>) = flip trace
@@ -131,6 +136,42 @@ class Serializable a where
 type Key
   = String
 
+type IResource a = (Typeable a, Indexable a, Serializable a)
+
+
+-- there are two references to the DBRef here
+-- The Maybe one keeps it alive until the cache releases it for *Resources
+-- calls which does not reference dbrefs explicitly
+-- The weak reference keeps the dbref alive until is it not referenced elsewere
+data CacheElem
+  = forall a. (IResource a, Typeable a) => CacheElem (Maybe (DBRef a)) (Weak (DBRef a))
+
+type Ht
+  = H.BasicHashTable String CacheElem
+type Hts
+  = Map.Map TypeRep Ht
+
+-- Contains the hashtable and last sync time.
+type Cache
+  = IORef (Hts,Integer)
+
+data CheckTPVarFlags
+  = AddToHash
+  | NoAddToHash
+
+-- | Set the cache. This is useful for hot loaded modules that will update an existing cache. Experimental
+-- setCache :: Cache -> IO ()
+-- setCache ref = readIORef ref >>= \ch -> writeIORef refcache ch
+
+-- | The cache holder. Established by default
+-- refcache :: Cache
+-- refcache = unsafePerformIO $ newCache >>= newIORef
+
+-- | Creates a new cache. Experimental.
+newCache  :: IO (Hts,Integer)
+newCache = return (Map.empty,0)
+
+
 -- | A persistence mechanism has to implement these primitives.
 -- 'filePersist' is the default file persistence.
 data Persist = Persist
@@ -141,6 +182,7 @@ data Persist = Persist
   , listByType  :: forall t. (Typeable t)
     => Proxy t -> IO [Key]                        -- ^ List keys of objects of the given type.
   , initialise  :: IO ()                          -- ^ Perform initialisation of this persistence store.
+  , cache       :: Cache                          -- ^ Cached values.
   }
 
 -- | Implements default persistence of objects in files with their keys as filenames,
@@ -153,6 +195,7 @@ filePersist dir = Persist
   , delete     = defaultDelete dir
   , listByType = defaultListByType dir
   , initialise = createDirectoryIfMissing True dir
+  , cache      = unsafePerformIO $ newCache >>= newIORef
   }
 
 defaultReadByKey :: FilePath -> String -> IO (Maybe B.ByteString)
