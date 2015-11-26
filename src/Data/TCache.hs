@@ -362,7 +362,7 @@ writeDBRef store dbref@(DBRef oldkey tv) x = x `seq` do
 
 
 instance Show (DBRef a) where
-  show (DBRef  k _) = "DBRef \""++ k ++ "\""
+  show (DBRef k _) = "DBRef \""++ k ++ "\""
 
 -- instance (IResource a, Typeable a) => Read (DBRef a) where
 --   readsPrec n str1 = readit str
@@ -390,7 +390,7 @@ keyObjDBRef (DBRef k _) = k
 -- | Get the reference to the object in the cache. If it does not exist, the reference is created empty.
 -- Every execution of 'getDBRef' returns the same unique reference to this key,
 -- so it can be safely considered pure. This is a property useful because deserialization
--- of objects with unused embedded DBRef's do not need to marshall them eagerly.
+-- of objects with unused embedded DBRefs do not need to marshall them eagerly.
 -- This also avoids unnecessary cache lookups of the pointed objects.
 {-# NOINLINE getDBRef #-}
 getDBRef :: forall a. (Typeable a, IResource a) => Persist -> Key -> DBRef a
@@ -409,9 +409,9 @@ getDBRef store key = unsafePerformIO $! getDBRef1 $! key where
           case mdb of
             Nothing -> return $! castErr "1" dbref  -- !> "just"
             Just _  -> do
-              htsInsert store hts key (CacheElem Nothing w) --to notify when the DBREf leave its reference
+              htsInsert store hts key (CacheElem Nothing w) -- to notify when the DBREf leave its reference
               return $! castErr "2" dbref
-        Nothing -> finalize w >> getDBRef1 key -- !> "finalize"  -- the weak pointer has not executed his finalizer
+        Nothing -> finalize w >> getDBRef1 key -- !> "finalize" -- the weak pointer has not executed his finalizer
     
     Nothing -> do
       tv <- newTVarIO NotRead                              -- !> "Nothing"
@@ -422,49 +422,6 @@ getDBRef store key = unsafePerformIO $! getDBRef1 $! key where
       return dbref
 
 getRefFlag = unsafePerformIO $ newMVar ()
-
-{- | Create the object passed as parameter (if it does not exist) and
--- return its reference in the IO monad.
--- If an object with the same key already exists, it is returned as is
--- If not, the reference is created with the new value.
--- If you like to update in any case, use 'getDBRef' and 'writeDBRef' combined
-newDBRefIO :: (IResource a,Typeable a) => a -> IO (DBRef a)
-newDBRefIO x= do
- let key = keyResource x
- mdbref <- mDBRefIO key
- case mdbref of
-   Right dbref -> return dbref
-
-   Left cache -> do
-     tv<- newTVarIO  DoNotExist
-     let dbref= DBRef key  tv
-     w <- mkWeakPtr  dbref . Just $ fixToCache dbref
-     H.insert cache key (CacheElem Nothing w)
-     t <-  timeInteger
-     atomically $ do
-       applyTriggers [dbref] [Just x]      --`debug` ("before "++key)
-       writeTVar tv  . Exist $ Elem x t t
-       return dbref
-
--}
-
-
-----  get a single DBRef if exist
---mDBRefIO
---       :: (IResource a, Typeable a)
---       => String                       -- ^ the list of partial object definitions for which keyResource can be extracted
---       -> IO (Either Ht (DBRef a))     -- ^ ThTCache.hse TVars that contain such objects
---mDBRefIO k= do
---    (cache,_) <-  readIORef refcache
---    r <-   H.lookup cache  k
---    case r of
---     Just (CacheElem _ w) -> do
---        mr <-  deRefWeak w
---        case mr of
---          Just dbref ->  return . Right $! castErr dbref
---          Nothing ->  finalize w >> mDBRefIO k
---     Nothing -> return $ Left cache
-
 
 
 -- | Create the object passed as parameter (if it does not exist) and
@@ -477,29 +434,10 @@ newDBRefIO x= do
 newDBRef :: (IResource a, Typeable a) => Persist -> a -> STM (DBRef a)
 newDBRef store x = do
   let ref = getDBRef store $! key x
-
   mr <- readDBRef store ref
   case mr of
     Nothing -> writeDBRef store ref x >> return ref -- !> " write"
     Just r  -> return ref                           -- !> " non write"
-
---newDBRef ::   (IResource a, Typeable a) => a -> STM  (DBRef a)
---newDBRef x = do
---  let key= keyResource x
---  mdbref <-  unsafeIOToSTM $ mDBRefIO  key
---  case mdbref of
---   Right dbref -> return dbref
---   Left cache -> do
---      t  <- unsafeIOToSTM timeInteger
---      tv <- newTVar DoNotExist
---      let dbref= DBRef key  tv
---      (cache,_) <- unsafeIOToSTM $ readIORef refcache
---      applyTriggers [dbref] [Just x]
---      writeTVar tv   . Exist $ Elem x t t
---      unsafeIOToSTM $ do
---        w <- mkWeakPtr dbref . Just $ fixToCache dbref
---        H.insert cache key ( CacheElem Nothing w)
---      return dbref
 
 -- | Delete the content of the DBRef form the cache and from permanent storage
 delDBRef :: (IResource a, Typeable a) => Persist -> DBRef a -> STM ()
@@ -521,14 +459,14 @@ delDBRef store dbref@(DBRef k tv) = do
 --
 -- @result <- readDBRef ref \`onNothing\` return someDefaultValue@
 onNothing io onerr = do
-  my <-  io
+  my <- io
   case my of
    Just y -> return y
    Nothing -> onerr
 
 -- | Deletes the pointed object from the cache, not the database (see 'delDBRef')
 -- useful for cache invalidation when the database is modified by other process
-flushDBRef ::  (IResource a, Typeable a) => DBRef a -> STM ()
+flushDBRef :: (IResource a, Typeable a) => DBRef a -> STM ()
 flushDBRef (DBRef _ tv) = writeTVar tv NotRead
 
 -- | flush the element with the given key
@@ -537,12 +475,12 @@ flushKey store proxy key = do
   (hts,time) <- unsafeIOToSTM $ readIORef $ cache store
   c <- unsafeIOToSTM $ htsLookup proxy hts key
   case c of
+    Nothing              -> return ()
     Just (CacheElem _ w) -> do
       mr <- unsafeIOToSTM $ deRefWeak w
       case mr of
         Just (DBRef k tv) -> writeTVar tv NotRead
         Nothing -> unsafeIOToSTM (finalize w) >> flushKey store proxy key
-    Nothing   -> return ()
 
 -- | label the object as not existent in database
 invalidateKey :: (Typeable a) => Persist -> Proxy a -> Key -> STM ()
@@ -576,10 +514,10 @@ timeInteger = do
   TOD t _ <- getClockTime
   return t
 
-releaseTPVars :: (IResource a,Typeable a) => Persist -> [a] -> Hts -> STM ()
+releaseTPVars :: (IResource a, Typeable a) => Persist -> [a] -> Hts -> STM ()
 releaseTPVars store rs hts = mapM_ (releaseTPVar store hts) rs
 
-releaseTPVar :: forall a. (IResource a,Typeable a) => Persist -> Hts -> a -> STM ()
+releaseTPVar :: forall a. (IResource a, Typeable a) => Persist -> Hts -> a -> STM ()
 releaseTPVar store hts r = do
   c <- unsafeIOToSTM $ htsLookup (Proxy :: Proxy a) hts keyr
   case c of

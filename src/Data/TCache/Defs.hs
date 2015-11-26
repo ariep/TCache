@@ -187,16 +187,18 @@ data Persist = Persist
 
 -- | Implements default persistence of objects in files with their keys as filenames,
 -- inside the given directory.
-filePersist :: FilePath -> Persist
-filePersist dir = Persist
-  {
-    readByKey  = defaultReadByKey dir
-  , write      = defaultWrite dir
-  , delete     = defaultDelete dir
-  , listByType = defaultListByType dir
-  , initialise = createDirectoryIfMissing True dir
-  , cache      = unsafePerformIO $ newCache >>= newIORef
-  }
+filePersist :: FilePath -> IO Persist
+filePersist dir = do
+  c <- newCache >>= newIORef
+  return $ Persist
+    {
+      readByKey  = defaultReadByKey dir
+    , write      = defaultWrite dir
+    , delete     = defaultDelete dir
+    , listByType = defaultListByType dir
+    , initialise = createDirectoryIfMissing True dir
+    , cache      = c
+    }
 
 defaultReadByKey :: FilePath -> String -> IO (Maybe B.ByteString)
 defaultReadByKey dir k = handle handler $ do
