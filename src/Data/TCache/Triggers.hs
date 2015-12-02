@@ -25,45 +25,40 @@ newtype TriggerType a
   = TriggerType (DBRef a -> Maybe a -> STM ())
   deriving (Typeable)
 
-data CMTrigger
-  = forall a. (Typeable a) => CMTrigger !((DBRef a) -> Maybe a -> STM ())
-
-cmtriggers :: IORef [(TypeRep, [CMTrigger])]
-cmtriggers = unsafePerformIO $ newIORef []
-
-{- | Add an user defined trigger to the list of triggers
-Trriggers are called just before an object of the given type is created, modified or deleted.
+{- | Add an user defined trigger to the list of triggers.
+Triggers are called just before an object of the given type is created, modified or deleted.
 The DBRef to the object and the new value is passed to the trigger.
 The called trigger function has two parameters: the DBRef being accesed
 (which still contains the old value), and the new value.
 If the DBRef is being deleted, the second parameter is 'Nothing'.
 if the DBRef contains Nothing, then the object is being created
 -}
-addTrigger :: (Typeable a) => ((DBRef a) -> Maybe a -> STM()) -> IO()
-addTrigger t = do
-  map <- readIORef cmtriggers
-  writeIORef cmtriggers $
+addTrigger :: (Typeable a) => Persist -> ((DBRef a) -> Maybe a -> STM ()) -> IO ()
+addTrigger store t = do
+  let triggers = cmtriggers store
+  map <- readIORef triggers
+  writeIORef triggers $
     let ts = mbToList $ lookup atype map
       in nubByType $ (atype, CMTrigger t : ts) : map
  where
-  nubByType = nubBy (\(t,_) (t',_) -> t == t')
+  nubByType = nubBy (\ (t,_) (t',_) -> t == t')
   (_,(atype : _)) = splitTyConApp  . typeOf $ TriggerType t
 
 mbToList :: Maybe [x] -> [x]
 mbToList = maybe [] id
 
 -- | internally called when a DBRef is modified/deleted/created
-applyTriggers:: (Typeable a) => [DBRef a] -> [Maybe a] -> STM()
-applyTriggers  [] _ = return()
-applyTriggers  dbrfs mas = do
-  map <- unsafeIOToSTM $ readIORef cmtriggers
+applyTriggers:: (Typeable a) => Persist -> [DBRef a] -> [Maybe a] -> STM ()
+applyTriggers store [] _ = return ()
+applyTriggers store dbrfs mas = do
+  map <- unsafeIOToSTM $ readIORef $ cmtriggers store
   let ts = mbToList $ lookup (typeOf $ fromJust (head mas)) map
-  mapM_ f  ts
+  mapM_ f ts
  where
   f t = mapM2_ (f1 t) dbrfs mas
 
   f1 :: (Typeable a) => CMTrigger -> DBRef a -> Maybe a -> STM ()
   f1 (CMTrigger t) dbref ma = (unsafeCoerce t) dbref ma
 
-mapM2_ _ [] _= return ()
-mapM2_ f (x:xs) (y:ys) = f x y >> mapM2_ f xs ys
+mapM2_ _ [] _ = return ()
+mapM2_ f (x : xs) (y : ys) = f x y >> mapM2_ f xs ys

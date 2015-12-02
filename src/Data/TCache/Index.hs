@@ -64,7 +64,7 @@ instance (Serializable (Index s)) => Serializable (LabelledIndex s) where
 index :: forall s. (Indexed s,IResource (LabelledIndex s)) => Persist -> s -> IO ()
 index store s = do
   atomically checkIndex
-  addTrigger $ selectorIndex store s
+  addTrigger store $ selectorIndex store s
  where
   indexRef = getIndexDBRef store s
   checkIndex = readDBRef store indexRef >>= \case
@@ -72,6 +72,7 @@ index store s = do
     Nothing -> do
       let tr = show (typeRep (Proxy :: Proxy (Record s  )))
       let tp = show (typeRep (Proxy :: Proxy (Property s)))
+      safeIOToSTM . putStrLn $ "Store: " ++ show store
       safeIOToSTM . putStrLn
         $ "The index from " ++ tr ++ " to " ++ tp ++ " is not there; generating..."
       refs <- map (getDBRef store) <$>

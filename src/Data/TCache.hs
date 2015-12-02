@@ -319,7 +319,7 @@ readDBRefs store dbrefs = do
   let mf (DBRef key tv) = readTVar tv >>= \case
         Exist (Elem x _ mt) -> do
           t <- unsafeIOToSTM timeInteger
-          writeTVar tv  . Exist $ Elem x t mt
+          writeTVar tv . Exist $ Elem x t mt
           return $ Right $ Just x
         DoNotExist -> return $ Right Nothing
         NotRead ->  return $ Left key
@@ -353,9 +353,9 @@ writeDBRef :: (IResource a, Typeable a) => Persist -> DBRef a -> a -> STM ()
 writeDBRef store dbref@(DBRef oldkey tv) x = x `seq` do
   let newkey = key x
   if newkey /= oldkey
-    then  error $ "writeDBRef: law of key conservation broken: old , new= " ++ oldkey ++ " , " ++ newkey
+    then error $ "writeDBRef: law of key conservation broken: old , new= " ++ oldkey ++ " , " ++ newkey
     else do
-      applyTriggers [dbref] [Just x]
+      applyTriggers store [dbref] [Just x]
       t <- unsafeIOToSTM timeInteger
       writeTVar tv $! Exist $! Elem x t t
       return ()
@@ -363,15 +363,6 @@ writeDBRef store dbref@(DBRef oldkey tv) x = x `seq` do
 
 instance Show (DBRef a) where
   show (DBRef k _) = "DBRef \""++ k ++ "\""
-
--- instance (IResource a, Typeable a) => Read (DBRef a) where
---   readsPrec n str1 = readit str
---    where
---     str = dropWhile isSpace str1
---     readit ('D' : 'B' : 'R' : 'e' : 'f' : ' ' : '\"' : str1) =
---       let   (key,nstr) =  break (== '\"') str1
---       in  [( getDBRef key :: DBRef a, tail nstr)]
---     readit  _ = []
 
 instance Eq (DBRef a) where
   DBRef k _ == DBRef k' _ = k == k'
@@ -403,7 +394,7 @@ getDBRef store key = unsafePerformIO $! getDBRef1 $! key where
   case r of
     Just (CacheElem mdb w) -> do
       putMVar getRefFlag ()
-      mr <-  deRefWeak w
+      mr <- deRefWeak w
       case mr of
         Just dbref@(DBRef _ tv) ->
           case mdb of
@@ -415,8 +406,8 @@ getDBRef store key = unsafePerformIO $! getDBRef1 $! key where
     
     Nothing -> do
       tv <- newTVarIO NotRead                              -- !> "Nothing"
-      dbref <- evaluate $ DBRef key  tv
-      w <- mkWeakPtr  dbref . Just $ fixToCache store dbref
+      dbref <- evaluate $ DBRef key tv
+      w <- mkWeakPtr dbref . Just $ fixToCache store dbref
       htsInsert store hts key (CacheElem Nothing w)
       putMVar getRefFlag ()
       return dbref
@@ -445,7 +436,7 @@ delDBRef store dbref@(DBRef k tv) = do
   mr <- readDBRef store dbref
   case mr of
    Just x -> do
-     applyTriggers [dbref] [Nothing]
+     applyTriggers store [dbref] [Nothing]
      writeTVar tv DoNotExist
      safeIOToSTM . criticalSection saving $ delResource store x
    Nothing -> return ()
@@ -526,14 +517,14 @@ releaseTPVar store hts r = do
       case mr of
         Nothing -> unsafeIOToSTM (finalize w) >> releaseTPVar store hts r
         Just dbref@(DBRef key tv) -> do
-          applyTriggers [dbref] [Just (castErr "4" r)]
+          applyTriggers store [dbref] [Just (castErr "4" r)]
           t <- unsafeIOToSTM  timeInteger
           writeTVar tv . Exist  $ Elem  (castErr "5" r) t t
     Nothing              -> do
       ti  <- unsafeIOToSTM timeInteger
       tvr <- newTVar NotRead
       dbref <- unsafeIOToSTM . evaluate $ DBRef keyr tvr
-      applyTriggers [dbref] [Just r]
+      applyTriggers store [dbref] [Just r]
       writeTVar tvr . Exist $ Elem r ti ti
       w <- unsafeIOToSTM . mkWeakPtr dbref $ Just $ fixToCache store dbref
       unsafeIOToSTM $ htsInsert store hts keyr

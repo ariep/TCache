@@ -10,15 +10,15 @@
 module Data.TCache.Defs where
 
 import           Control.Concurrent
-import           Control.Concurrent.STM (TVar)
+import           Control.Concurrent.STM (STM, TVar)
 import           Control.Exception as Exception
-import           Control.Monad          (when,replicateM)
+import           Control.Monad          (when, replicateM)
 import qualified Data.ByteString.Lazy.Char8 as B
 import qualified Data.HashTable.IO as H
 import           Data.IORef
-import           Data.List              (elemIndices,isInfixOf,stripPrefix)
+import           Data.List              (elemIndices, isInfixOf, stripPrefix)
 import qualified Data.Map          as Map
-import           Data.Maybe             (fromJust,catMaybes)
+import           Data.Maybe             (fromJust, catMaybes)
 import           Data.Typeable
 import           System.Directory
   (
@@ -171,6 +171,9 @@ data CheckTPVarFlags
 newCache  :: IO (Hts,Integer)
 newCache = return (Map.empty,0)
 
+data CMTrigger
+  = forall a. (Typeable a) => CMTrigger !((DBRef a) -> Maybe a -> STM ())
+
 
 -- | A persistence mechanism has to implement these primitives.
 -- 'filePersist' is the default file persistence.
@@ -182,22 +185,30 @@ data Persist = Persist
   , listByType  :: forall t. (Typeable t)
     => Proxy t -> IO [Key]                        -- ^ List keys of objects of the given type.
   , initialise  :: IO ()                          -- ^ Perform initialisation of this persistence store.
+  , cmtriggers  :: IORef [(TypeRep, [CMTrigger])]
   , cache       :: Cache                          -- ^ Cached values.
+  , persistName :: String                         -- ^ For showing.
   }
+
+instance Show Persist where
+  show p = persistName p
 
 -- | Implements default persistence of objects in files with their keys as filenames,
 -- inside the given directory.
 filePersist :: FilePath -> IO Persist
 filePersist dir = do
+  t <- newIORef []
   c <- newCache >>= newIORef
   return $ Persist
     {
-      readByKey  = defaultReadByKey dir
-    , write      = defaultWrite dir
-    , delete     = defaultDelete dir
-    , listByType = defaultListByType dir
-    , initialise = createDirectoryIfMissing True dir
-    , cache      = c
+      readByKey   = defaultReadByKey dir
+    , write       = defaultWrite dir
+    , delete      = defaultDelete dir
+    , listByType  = defaultListByType dir
+    , initialise  = createDirectoryIfMissing True dir
+    , cmtriggers  = t
+    , cache       = c
+    , persistName = "File persist in " ++ show dir
     }
 
 defaultReadByKey :: FilePath -> String -> IO (Maybe B.ByteString)
