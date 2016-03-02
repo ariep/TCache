@@ -5,6 +5,7 @@
 {-# LANGUAGE DeriveDataTypeable #-}
 {-# LANGUAGE ConstraintKinds #-}
 {-# LANGUAGE ExistentialQuantification #-}
+{-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {- | some internal definitions. To use default persistence, import
 @Data.TCache.DefaultPersistence@ instead -}
 module Data.TCache.Defs where
@@ -13,6 +14,7 @@ import           Control.Concurrent
 import           Control.Concurrent.STM (STM, TVar)
 import           Control.Exception as Exception
 import           Control.Monad          (when, replicateM)
+import           Control.Monad.Reader  (MonadReader, ask, ReaderT(ReaderT), runReaderT)
 import qualified Data.ByteString.Lazy.Char8 as B
 import qualified Data.HashTable.IO as H
 import           Data.IORef
@@ -184,7 +186,6 @@ data Persist = Persist
   , delete      :: Key -> IO ()                   -- ^ delete
   , listByType  :: forall t. (Typeable t)
     => Proxy t -> IO [Key]                        -- ^ List keys of objects of the given type.
-  , initialise  :: IO ()                          -- ^ Perform initialisation of this persistence store.
   , cmtriggers  :: IORef [(TypeRep, [CMTrigger])]
   , cache       :: Cache                          -- ^ Cached values.
   , persistName :: String                         -- ^ For showing.
@@ -199,17 +200,31 @@ filePersist :: FilePath -> IO Persist
 filePersist dir = do
   t <- newIORef []
   c <- newCache >>= newIORef
+  createDirectoryIfMissing True dir
   return $ Persist
     {
       readByKey   = defaultReadByKey dir
     , write       = defaultWrite dir
     , delete      = defaultDelete dir
     , listByType  = defaultListByType dir
-    , initialise  = createDirectoryIfMissing True dir
     , cmtriggers  = t
     , cache       = c
     , persistName = "File persist in " ++ show dir
     }
+
+newtype DB a
+  = DB (ReaderT Persist STM a)
+  deriving (Functor, Applicative, Monad, MonadReader Persist)
+
+runDB :: Persist -> DB a -> STM a
+runDB s (DB h) = runReaderT h s
+
+db :: (Persist -> STM a) -> DB a
+db = DB . ReaderT
+
+stm :: STM a -> DB a
+stm = db . const
+
 
 defaultReadByKey :: FilePath -> String -> IO (Maybe B.ByteString)
 defaultReadByKey dir k = handle handler $ do

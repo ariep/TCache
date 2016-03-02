@@ -61,34 +61,35 @@ instance (Serializable (Index s)) => Serializable (LabelledIndex s) where
 
 -- | Register a trigger for indexing the values of the field passed as parameter.
 -- The indexed field can be used to perform relational-like searches.
-index :: forall s. (Indexed s,IResource (LabelledIndex s)) => Persist -> s -> IO ()
+index :: forall s. (Indexed s, IResource (LabelledIndex s)) => Persist -> s -> IO ()
 index store s = do
   atomically checkIndex
   addTrigger store $ selectorIndex store s
  where
   indexRef = getIndexDBRef store s
-  checkIndex = readDBRef store indexRef >>= \case
+  checkIndex = runDB store $ readDBRef indexRef >>= \case
     Just _  -> return ()
     Nothing -> do
       let tr = show (typeRep (Proxy :: Proxy (Record s  )))
       let tp = show (typeRep (Proxy :: Proxy (Property s)))
-      safeIOToSTM . putStrLn $ "Store: " ++ show store
-      safeIOToSTM . putStrLn
-        $ "The index from " ++ tr ++ " to " ++ tp ++ " is not there; generating..."
-      refs <- map (getDBRef store) <$>
-        safeIOToSTM (listResources store (Proxy :: Proxy (Record s)))
-      safeIOToSTM . putStrLn $ "  found " ++ show (length refs) ++ " objects."
-      objects <- mapM (readDBRef store) refs
+      -- db $ \ s -> safeIOToSTM . putStrLn $ "Store: " ++ show s
+      -- stm . safeIOToSTM . putStrLn
+      --   $ "The index from " ++ tr ++ " to " ++ tp ++ " is not there; generating..."
+      refs <- db $ \ s -> map (getDBRef s) <$>
+        safeIOToSTM (listResources s (Proxy :: Proxy (Record s)))
+      -- stm . safeIOToSTM . putStrLn $
+      --   "  found " ++ show (length refs) ++ " objects."
+      objects <- mapM readDBRef refs
       let f = foldMap single (zip refs objects)
           single (ref,Just object) = Endo $ addToIndex s (selector s object) ref
           single (_  ,Nothing    ) = Endo id
           newIndex = appEndo f (emptyIndex s)
-      writeDBRef store indexRef $ LabelledIndex (key s) newIndex
+      writeDBRef indexRef $ LabelledIndex (key s) newIndex
 
 selectorIndex :: (Indexed s,IResource (LabelledIndex s))
   => Persist -> s -> DBRef (Record s) -> Maybe (Record s) -> STM ()
 selectorIndex store s oldRef maybeNew = do
-  maybeOld <- readDBRef store oldRef
+  maybeOld <- runDB store $ readDBRef oldRef
   let indexChanges = case (maybeOld,maybeNew) of
         (Nothing ,Nothing ) -> Nothing
         (Just old,Just new) ->
@@ -101,8 +102,8 @@ selectorIndex store s oldRef maybeNew = do
     Nothing -> return ()
     Just f  -> do
       let indexRef = getIndexDBRef store s
-      Just (LabelledIndex k oldIndex) <- readDBRef store indexRef
-      writeDBRef store indexRef $ LabelledIndex k $ f oldIndex
+      Just (LabelledIndex k oldIndex) <- runDB store $ readDBRef indexRef
+      runDB store $ writeDBRef indexRef $ LabelledIndex k $ f oldIndex
  where
   deleteOld old = removeFromIndex s (selector s old) oldRef
   insertNew new = addToIndex      s (selector s new) (getDBRef store . key $ new)
@@ -112,11 +113,13 @@ getIndexDBRef :: forall s. (Indexed s,IResource (LabelledIndex s))
 getIndexDBRef store s = getDBRef store $! key (LabelledIndex (key s) $ emptyIndex s :: LabelledIndex s)
 
 readIndex :: (Indexed s,IResource (LabelledIndex s))
-  => Persist -> s -> STM (Index s)
-readIndex store s = readDBRef store (getIndexDBRef store s) >>= \case
-  Just (LabelledIndex _ i) -> return i
-  Nothing                  -> error
-    "Data.TCache.Index.readIndex: index not found. Did you register the index?"
+  => s -> DB (Index s)
+readIndex s = do
+  r <- db $ \ store -> return $ getIndexDBRef store s
+  readDBRef r >>= \case
+    Just (LabelledIndex _ i) -> return i
+    Nothing                  -> error
+      "Data.TCache.Index.readIndex: index not found. Did you register the index?"
 
 {-
 

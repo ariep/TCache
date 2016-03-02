@@ -28,10 +28,10 @@ newtype TriggerType a
 {- | Add an user defined trigger to the list of triggers.
 Triggers are called just before an object of the given type is created, modified or deleted.
 The DBRef to the object and the new value is passed to the trigger.
-The called trigger function has two parameters: the DBRef being accesed
+The called trigger function has two parameters: the DBRef being accessed
 (which still contains the old value), and the new value.
 If the DBRef is being deleted, the second parameter is 'Nothing'.
-if the DBRef contains Nothing, then the object is being created
+If the DBRef contains Nothing, then the object is being created.
 -}
 addTrigger :: (Typeable a) => Persist -> ((DBRef a) -> Maybe a -> STM ()) -> IO ()
 addTrigger store t = do
@@ -48,9 +48,9 @@ mbToList :: Maybe [x] -> [x]
 mbToList = maybe [] id
 
 -- | internally called when a DBRef is modified/deleted/created
-applyTriggers:: (Typeable a) => Persist -> [DBRef a] -> [Maybe a] -> STM ()
-applyTriggers store [] _ = return ()
-applyTriggers store dbrfs mas = do
+applyTriggers:: (Typeable a) => [DBRef a] -> [Maybe a] -> DB ()
+applyTriggers [] _ = return ()
+applyTriggers dbrfs mas = db $ \ store -> do
   map <- unsafeIOToSTM $ readIORef $ cmtriggers store
   let ts = mbToList $ lookup (typeOf $ fromJust (head mas)) map
   mapM_ f ts

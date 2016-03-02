@@ -4,6 +4,7 @@
 {-# LANGUAGE StandaloneDeriving #-}
 module Data.TCache.Index.Text where
 
+import qualified Data.Search.Results as Results
 import           Data.TCache
 import           Data.TCache.Defs
 import           Data.TCache.Index
@@ -36,20 +37,18 @@ instance
 
 instance
   ( Serializable r,Indexable r,IResource r,Typeable r
-  , Serializable (I.Index (DBRef r))
+  , Serializable (I.Index Key)
   ) => Indexed (Field r) where
   
   type Index (Field r)
-    = I.Index (DBRef r)
+    = I.Index Key
   
   emptyIndex _ = I.empty
   addToIndex      (Fields _ _) ts r = appEndo e where
-    e = foldMap (Endo . I.addDocument r) ts
-  removeFromIndex (Fields _ _) _ts r = I.removeDocument r
+    e = foldMap (Endo . I.addDocument (keyObjDBRef r)) ts
+  removeFromIndex (Fields _ _) _ts r = I.removeDocument $ keyObjDBRef r
 
 lookup ::
   ( Indexed (Field r),IResource (LabelledIndex (Field r))
-  ) => Persist -> Field r -> Int -> Text -> STM [(DBRef r,Double,Text)]
-lookup store s n t = I.lookup n t <$> readIndex store s
-
-deriving instance Typeable Down
+  ) => Field r -> Text -> DB (Results.T Key I.Weight Text)
+lookup s t = flip I.lookupPhrase t <$> readIndex s

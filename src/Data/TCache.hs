@@ -120,6 +120,7 @@ DBRef's and @*Resource(s)@ primitives are completely interoperable. The latter o
 -}
   , DBRef
   , getDBRef
+  , getDBRefM
   , keyObjDBRef
   , newDBRef
   --, newDBRefIO
@@ -297,14 +298,14 @@ fixToCache store dbref@(DBRef k _tv)= do
 
 -- | Return the reference value. If it is not in the cache, it is fetched
 -- from the database.
-readDBRef :: (IResource a, Typeable a) => Persist -> DBRef a -> STM (Maybe a)
-readDBRef store dbref@(DBRef key tv) = readTVar tv >>= \case
+readDBRef :: (IResource a, Typeable a) => DBRef a -> DB (Maybe a)
+readDBRef dbref@(DBRef key tv) = db $ \ s -> readTVar tv >>= \case
   Exist (Elem x _ mt) -> do
     t <- unsafeIOToSTM timeInteger
     writeTVar tv . Exist $ Elem x t mt
     return $ Just x
   DoNotExist -> return Nothing
-  NotRead    -> safeIOToSTM (readResourceByKey store key) >>= \case
+  NotRead    -> safeIOToSTM (readResourceByKey s key) >>= \case
     Nothing -> do
       writeTVar tv DoNotExist
       return Nothing
@@ -314,12 +315,12 @@ readDBRef store dbref@(DBRef key tv) = readTVar tv >>= \case
       return $ Just x
 
 -- | Read multiple DBRefs in a single request using the new 'readResourcesByKey'
-readDBRefs :: (IResource a, Typeable a) => Persist -> [DBRef a] -> STM [(Maybe a)]
-readDBRefs store dbrefs = do
-  let mf (DBRef key tv) = readTVar tv >>= \case
+readDBRefs :: (IResource a, Typeable a) => [DBRef a] -> DB [(Maybe a)]
+readDBRefs dbrefs = do
+  let mf (DBRef key tv) = stm (readTVar tv) >>= \case
         Exist (Elem x _ mt) -> do
-          t <- unsafeIOToSTM timeInteger
-          writeTVar tv . Exist $ Elem x t mt
+          t <- stm $ unsafeIOToSTM timeInteger
+          stm . writeTVar tv . Exist $ Elem x t mt
           return $ Right $ Just x
         DoNotExist -> return $ Right Nothing
         NotRead ->  return $ Left key
@@ -331,8 +332,9 @@ readDBRefs store dbrefs = do
   let (toReadKeys,dbrs) = unzip pairs
   let fromLeft (Left k) = k
       fromLeft _        = error "this will never happen"
-  rs <- safeIOToSTM . readResourcesByKey store $ map fromLeft toReadKeys
-  let processTVar (r,DBRef key tv) = case r of
+  rs <- db $ \ s -> safeIOToSTM . readResourcesByKey s $
+    map fromLeft toReadKeys
+  let processTVar (r, DBRef key tv) = stm $ case r of
         Nothing -> writeTVar tv DoNotExist
         Just x  -> do
           t <- unsafeIOToSTM timeInteger
@@ -340,6 +342,7 @@ readDBRefs store dbrefs = do
   mapM_ processTVar $ zip rs dbrs
   let mix (Right x : xs) ys       = x : mix xs ys
       mix (Left _  : xs) (y : ys) = y : mix xs ys
+      mix []             ys       = ys
   return $ mix inCache rs
 
 -- | Write in the reference a value
@@ -349,15 +352,15 @@ readDBRefs store dbrefs = do
 -- WARNING: the value to be written in the DBRef must be fully evaluated. Delayed evaluations at
 -- serialization time can cause inconsistencies in the database.
 -- In future releases this will be enforced.
-writeDBRef :: (IResource a, Typeable a) => Persist -> DBRef a -> a -> STM ()
-writeDBRef store dbref@(DBRef oldkey tv) x = x `seq` do
+writeDBRef :: (IResource a, Typeable a) => DBRef a -> a -> DB ()
+writeDBRef dbref@(DBRef oldkey tv) x = x `seq` do
   let newkey = key x
   if newkey /= oldkey
     then error $ "writeDBRef: law of key conservation broken: old , new= " ++ oldkey ++ " , " ++ newkey
     else do
-      applyTriggers store [dbref] [Just x]
-      t <- unsafeIOToSTM timeInteger
-      writeTVar tv $! Exist $! Elem x t t
+      applyTriggers [dbref] [Just x]
+      t <- stm $ unsafeIOToSTM timeInteger
+      stm $ writeTVar tv $! Exist $! Elem x t t
       return ()
 
 
@@ -412,6 +415,9 @@ getDBRef store key = unsafePerformIO $! getDBRef1 $! key where
       putMVar getRefFlag ()
       return dbref
 
+getDBRefM :: forall a. (Typeable a, IResource a) => Key -> DB (DBRef a)
+getDBRefM k = db $ \ s -> return $ getDBRef s k
+
 getRefFlag = unsafePerformIO $ newMVar ()
 
 
@@ -422,23 +428,23 @@ getRefFlag = unsafePerformIO $ newMVar ()
 -- If you like to update in any case, use 'getDBRef' and 'writeDBRef' combined
 -- if you  need to create the reference and the reference content, use 'newDBRef'
 {-# NOINLINE newDBRef #-}
-newDBRef :: (IResource a, Typeable a) => Persist -> a -> STM (DBRef a)
-newDBRef store x = do
-  let ref = getDBRef store $! key x
-  mr <- readDBRef store ref
+newDBRef :: (IResource a, Typeable a) => a -> DB (DBRef a)
+newDBRef x = do
+  ref <- db $ \ s -> return $ getDBRef s $! key x
+  mr <- readDBRef ref
   case mr of
-    Nothing -> writeDBRef store ref x >> return ref -- !> " write"
+    Nothing -> writeDBRef ref x >> return ref -- !> " write"
     Just r  -> return ref                           -- !> " non write"
 
 -- | Delete the content of the DBRef form the cache and from permanent storage
-delDBRef :: (IResource a, Typeable a) => Persist -> DBRef a -> STM ()
-delDBRef store dbref@(DBRef k tv) = do
-  mr <- readDBRef store dbref
+delDBRef :: (IResource a, Typeable a) => DBRef a -> DB ()
+delDBRef dbref@(DBRef k tv) = do
+  mr <- readDBRef dbref
   case mr of
    Just x -> do
-     applyTriggers store [dbref] [Nothing]
-     writeTVar tv DoNotExist
-     safeIOToSTM . criticalSection saving $ delResource store x
+     applyTriggers [dbref] [Nothing]
+     stm $ writeTVar tv DoNotExist
+     db $ \ s -> safeIOToSTM . criticalSection saving $ delResource s x
    Nothing -> return ()
 
 -- | Handles Nothing cases in a simpler way than runMaybeT.
@@ -461,40 +467,44 @@ flushDBRef :: (IResource a, Typeable a) => DBRef a -> STM ()
 flushDBRef (DBRef _ tv) = writeTVar tv NotRead
 
 -- | flush the element with the given key
-flushKey :: (Typeable a) => Persist -> Proxy a -> Key -> STM ()
-flushKey store proxy key = do
-  (hts,time) <- unsafeIOToSTM $ readIORef $ cache store
-  c <- unsafeIOToSTM $ htsLookup proxy hts key
+flushKey :: (Typeable a) => Proxy a -> Key -> DB ()
+flushKey proxy key = do
+  (hts, time) <- db $ \ s -> unsafeIOToSTM $ readIORef $ cache s
+  c <- stm . unsafeIOToSTM $ htsLookup proxy hts key
   case c of
     Nothing              -> return ()
     Just (CacheElem _ w) -> do
-      mr <- unsafeIOToSTM $ deRefWeak w
+      mr <- stm . unsafeIOToSTM $ deRefWeak w
       case mr of
-        Just (DBRef k tv) -> writeTVar tv NotRead
-        Nothing -> unsafeIOToSTM (finalize w) >> flushKey store proxy key
+        Just (DBRef k tv) -> stm $ writeTVar tv NotRead
+        Nothing -> do
+          stm . unsafeIOToSTM $ finalize w
+          flushKey proxy key
 
 -- | label the object as not existent in database
-invalidateKey :: (Typeable a) => Persist -> Proxy a -> Key -> STM ()
-invalidateKey store proxy key = do
-  (hts,time) <- unsafeIOToSTM $ readIORef $ cache store
-  c <- unsafeIOToSTM $ htsLookup proxy hts key
+invalidateKey :: (Typeable a) => Proxy a -> Key -> DB ()
+invalidateKey proxy key = do
+  (hts,time) <- db $ \ s -> unsafeIOToSTM $ readIORef $ cache s
+  c <- stm . unsafeIOToSTM $ htsLookup proxy hts key
   case c of
     Nothing               -> return ()
     Just  (CacheElem _ w) -> do
-      mr <- unsafeIOToSTM $ deRefWeak w
+      mr <- stm . unsafeIOToSTM $ deRefWeak w
       case mr of
-        Just (DBRef k tv) -> writeTVar tv DoNotExist
-        Nothing           -> unsafeIOToSTM (finalize w) >> flushKey store proxy key
+        Just (DBRef k tv) -> stm $ writeTVar tv DoNotExist
+        Nothing           -> do
+          stm . unsafeIOToSTM $ finalize w
+          flushKey proxy key
 
 
 -- | drops the entire cache.
-flushAll :: Persist -> STM ()
-flushAll store = do
-  (hts,time) <- unsafeIOToSTM $ readIORef $ cache store
-  elms <- unsafeIOToSTM $ htsToList hts
+flushAll :: DB ()
+flushAll = do
+  (hts,time) <- db $ \ s -> unsafeIOToSTM $ readIORef $ cache s
+  elms <- stm . unsafeIOToSTM $ htsToList hts
   mapM_ del elms
  where
-  del (_,CacheElem _ w) = do
+  del (_,CacheElem _ w) = stm $ do
     mr <- unsafeIOToSTM $ deRefWeak w
     case mr of
       Just (DBRef _  tv) -> writeTVar tv NotRead
@@ -505,29 +515,32 @@ timeInteger = do
   TOD t _ <- getClockTime
   return t
 
-releaseTPVars :: (IResource a, Typeable a) => Persist -> [a] -> Hts -> STM ()
-releaseTPVars store rs hts = mapM_ (releaseTPVar store hts) rs
+releaseTPVars :: (IResource a, Typeable a) => [a] -> Hts -> DB ()
+releaseTPVars rs hts = mapM_ (releaseTPVar hts) rs
 
-releaseTPVar :: forall a. (IResource a, Typeable a) => Persist -> Hts -> a -> STM ()
-releaseTPVar store hts r = do
-  c <- unsafeIOToSTM $ htsLookup (Proxy :: Proxy a) hts keyr
+releaseTPVar :: forall a. (IResource a, Typeable a) => Hts -> a -> DB ()
+releaseTPVar hts r = do
+  c <- stm . unsafeIOToSTM $ htsLookup (Proxy :: Proxy a) hts keyr
   case c of
     Just (CacheElem _ w) -> do
-      mr <- unsafeIOToSTM $ deRefWeak w
+      mr <- stm . unsafeIOToSTM $ deRefWeak w
       case mr of
-        Nothing -> unsafeIOToSTM (finalize w) >> releaseTPVar store hts r
+        Nothing -> do
+          stm . unsafeIOToSTM $ finalize w
+          releaseTPVar hts r
         Just dbref@(DBRef key tv) -> do
-          applyTriggers store [dbref] [Just (castErr "4" r)]
-          t <- unsafeIOToSTM  timeInteger
-          writeTVar tv . Exist  $ Elem  (castErr "5" r) t t
+          applyTriggers [dbref] [Just (castErr "4" r)]
+          t <- stm $ unsafeIOToSTM timeInteger
+          stm $ writeTVar tv . Exist $ Elem (castErr "5" r) t t
     Nothing              -> do
-      ti  <- unsafeIOToSTM timeInteger
-      tvr <- newTVar NotRead
-      dbref <- unsafeIOToSTM . evaluate $ DBRef keyr tvr
-      applyTriggers store [dbref] [Just r]
-      writeTVar tvr . Exist $ Elem r ti ti
-      w <- unsafeIOToSTM . mkWeakPtr dbref $ Just $ fixToCache store dbref
-      unsafeIOToSTM $ htsInsert store hts keyr
+      ti  <- stm $ unsafeIOToSTM timeInteger
+      tvr <- stm $ newTVar NotRead
+      dbref <- stm . unsafeIOToSTM . evaluate $ DBRef keyr tvr
+      applyTriggers [dbref] [Just r]
+      stm $ writeTVar tvr . Exist $ Elem r ti ti
+      w <- db $ \ s -> unsafeIOToSTM . mkWeakPtr dbref $
+        Just $ fixToCache s dbref
+      db $ \ s -> unsafeIOToSTM $ htsInsert s hts keyr
         (CacheElem (Just dbref) w) -- accessed and modified XXX
  where
   keyr = key r
