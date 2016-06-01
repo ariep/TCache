@@ -112,14 +112,20 @@ getIndexDBRef :: forall s. (Indexed s,IResource (LabelledIndex s))
   => Persist -> s -> DBRef (LabelledIndex s)
 getIndexDBRef store s = getDBRef store $! key (LabelledIndex (key s) $ emptyIndex s :: LabelledIndex s)
 
-readIndex :: (Indexed s,IResource (LabelledIndex s))
+readIndex :: forall s. (Indexed s,IResource (LabelledIndex s))
   => s -> DB (Index s)
 readIndex s = do
   r <- db $ \ store -> return $ getIndexDBRef store s
   readDBRef r >>= \case
-    Just (LabelledIndex _ i) -> return i
-    Nothing                  -> error
-      "Data.TCache.Index.readIndex: index not found. Did you register the index?"
+    Just (LabelledIndex label i) -> return i
+    Nothing                  -> error $
+      "Data.TCache.Index.readIndex: index not found:\n" ++
+      "  Record type: " ++ tr ++ "\n" ++
+      "  Property type: " ++ tp ++ "\n" ++
+      "  Did you register the index?"
+ where
+  tr = show (typeRep (Proxy :: Proxy (Record s  )))
+  tp = show (typeRep (Proxy :: Proxy (Property s)))
 
 {-
 
