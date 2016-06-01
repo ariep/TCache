@@ -25,6 +25,9 @@ data Field r where
 fields :: (r -> [Text]) -> Field r
 fields f = Fields f ""
 
+field :: (r -> Text) -> Field r
+field f = fields ((: []) . f)
+
 instance Indexable (Field r) where
   key (Fields _ s) = s
 
